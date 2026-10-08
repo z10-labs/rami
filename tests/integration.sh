@@ -4,11 +4,18 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${1:-$(mktemp -d "${TMPDIR:-/tmp}/brain-int.XXXXXX")}"
+REAL_HOME="$HOME"
 export HOME="$WORK/home"
 mkdir -p "$HOME/.claude" "$WORK/proj"
+# macOS: claude's login lives in the Keychain, which is found through HOME.
+if [ "$(uname -s)" = Darwin ] && [ ! -e "$HOME/Library/Keychains" ]; then
+  mkdir -p "$HOME/Library" && ln -s "$REAL_HOME/Library/Keychains" "$HOME/Library/Keychains"
+fi
 # Do not inherit an outer Claude Code session's identity.
 unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_REMOTE_SESSION_ID CLAUDECODE CLAUDE_CODE_CHILD_SESSION BRAIN_AGENT
 B="$HOME/brain/bin/brain"
+# macOS has no `timeout`; perl's alarm survives exec.
+command -v timeout >/dev/null 2>&1 || timeout() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 hr() { printf '\n==== %s\n' "$*"; }
 run() { # prompt -> runs a headless work session in $WORK/proj
   (cd "$WORK/proj" && timeout 600 claude -p --model "${MODEL:-sonnet}" --permission-mode acceptEdits \
@@ -17,7 +24,8 @@ run() { # prompt -> runs a headless work session in $WORK/proj
 
 hr install
 bash "$ROOT/install-brain.sh" | tail -3
-sed -i.bak 's/^WORK_HOURS=.*/WORK_HOURS=00:00-23:59 Mon-Sun/' "$HOME/brain/config"; rm -f "$HOME/brain/config.bak"
+sed -i.bak -e 's/^WORK_HOURS=.*/WORK_HOURS=00:00-23:59 Mon-Sun/' -e 's/^NOTIFY=.*/NOTIFY=off/' "$HOME/brain/config"; rm -f "$HOME/brain/config.bak"
+# NOTIFY=off: test findings go to the inbox file only, never to the owner's screen.
 
 hr "1. real work session (should create + link a task quietly)"
 run "Write fizz.py in this directory that prints FizzBuzz for 1 to 15, then run it with python3. This is ticket ENG-42." | tee "$WORK/s1.out"

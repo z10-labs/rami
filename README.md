@@ -11,7 +11,7 @@
 | `src/skill/SKILL.md` | the `brain` skill, installed to `~/.claude/skills/brain/` |
 | `src/README.md` | the owner's README, installed to `~/brain/README.md` |
 | `build.sh` | regenerates `install-brain.sh` from `src/` |
-| `tests/test.sh` | offline tests in a throwaway HOME with a fake `claude` (79 checks) |
+| `tests/test.sh` | offline tests in a throwaway HOME with a fake `claude` (97 checks) |
 | `tests/integration.sh` | real `claude` CLI and model, in a throwaway HOME |
 | `REPORT.md` | what was built and verified, and known issues |
 

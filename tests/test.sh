@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/brain-test.XXXXXX")"
 export HOME="$WORK/home"
 mkdir -p "$HOME/.claude" "$WORK/bin"
-unset CLAUDE_CONFIG_DIR BRAIN_HOME BRAIN_AGENT BRAIN_RUN_ID
+unset CLAUDE_CONFIG_DIR BRAIN_HOME BRAIN_AGENT BRAIN_RUN_ID CLAUDE_CODE_SESSION_ID
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
@@ -90,6 +90,7 @@ echo '{"type":"user","message":{"role":"user","content":"hi"}}' > "$TP"
 out="$(printf '{"session_id":"%s","cwd":"/w","transcript_path":"%s","hook_event_name":"SessionStart","source":"startup"}' "$SID" "$TP" | "$HOME/brain/bin/session-start.sh")"
 check "start hook logs a start line" "grep -q \"| start | $SID | /w | $TP\" $HOME/brain/sessions.log"
 check "board shows session id, task, follow-up and inbox" "echo \"\$out\" | grep -q $SID && echo \"\$out\" | grep -q api-rate-limits && echo \"\$out\" | grep -q 'Check gateway deploy' && echo \"\$out\" | grep -q 'Deploy check failed'"
+check "board asks to record work as soon as it starts" "echo \"\$out\" | grep -q 'As soon as' && echo \"\$out\" | grep -q 'brain log'"
 check "inbox cleared after being shown" "! grep -q 'Deploy check failed' $HOME/brain/inbox.md"
 out2="$(printf '{"session_id":"x2"}' | "$HOME/brain/bin/session-start.sh")"
 check "inbox not shown twice" "! echo \"\$out2\" | grep -q 'Deploy check failed'"
@@ -115,28 +116,73 @@ for i in $(seq 1 45); do rm "$HOME/brain/tasks/bulk-task-$i.md"; done
 grep -v 'bulk-task-1' "$HOME/brain/followups.md" > "$WORK/f" && cp "$WORK/f" "$HOME/brain/followups.md"
 printf '# Inbox\n\n' > "$HOME/brain/inbox.md"
 
-echo "== task size rules"
-for i in $(seq 1 20); do "$B" progress api-rate-limits "Milestone $i shipped" >/dev/null; done
+echo "== task log keeps the history"
+for i in $(seq 1 20); do "$B" log api-rate-limits "Milestone $i shipped" >/dev/null; done
+"$B" progress api-rate-limits "Old progress command still logs" >/dev/null
 "$B" set api-rate-limits direction "$(printf 'l1\nl2\nl3\nl4\nl5\nl6')" >/dev/null
+"$B" set api-rate-limits next "Ship the middleware" >/dev/null
+"$B" set api-rate-limits status blocked >/dev/null
+"$B" set api-rate-limits status active >/dev/null
 "$B" set api-rate-limits ticket "https://github.com/o/r/pull/7#issuecomment-1" >/dev/null
 "$B" link api-rate-limits "$SID" >/dev/null; "$B" link api-rate-limits "$SID" >/dev/null
+CLAUDE_CODE_SESSION_ID="$SID" "$B" log api-rate-limits "Found the gateway already buffers bursts" >/dev/null
 f="$HOME/brain/tasks/api-rate-limits.md"
-check "progress capped at 8, newest first" "[ \$(grep -c '^- .* Milestone' $f) -eq 8 ] && grep -m1 'Milestone' $f | grep -q 'Milestone 20'"
-check "direction capped at 4 lines" "! grep -q '^l5' $f"
-check "file under 40 lines (\$(wc -l < $f))" "[ \$(wc -l < $f) -le 40 ]"
+check "all 20 log lines kept, oldest first" "[ \$(grep -c '^- [0-9:]* Milestone' $f) -eq 20 ] && grep 'Milestone' $f | head -1 | grep -q 'Milestone 1 shipped'"
+check "progress is an alias for log" "grep -q 'Old progress command still logs' $f"
+check "no Progress section in new tasks" "! grep -q '^## Progress' $f"
+check "direction capped at 4 lines" "! sed -n '/^## Direction/,/^## /p' $f | grep -q '^l5'"
+check "direction change logged with the old value" "grep -q 'Direction changed to: .*l1.*(was: Token bucket in the gateway)' $f"
+check "next change logged with the old value" "grep -q 'Next: Ship the middleware (was: Write the middleware)' $f"
+check "status changes logged" "grep -q 'Status: active -> blocked' $f && grep -q 'Status: blocked -> active' $f"
+check "ticket addition logged" "grep -q 'Ticket added: https://github.com/o/r/pull/7' $f"
 check "two tickets kept, URL with # intact" "grep -q '^ticket: \[ENG-12, https://github.com/o/r/pull/7#issuecomment-1\]' $f"
-check "session linked once" "[ \$(grep -o $SID $f | wc -l) -eq 1 ]"
+check "session linked once" "[ \$(grep '^sessions:' $f | grep -o $SID | wc -l) -eq 1 ]"
+check "link logged once under that session's heading" "[ \$(grep -c 'Session linked' $f) -eq 1 ] && grep -q '^### .* | session 11111111 (w)' $f"
+check "entry from a session is filed under its heading" "awk '/^### /{h=\$0} /buffers bursts/{print h}' $f | grep -q 'session 11111111'"
+check "entries without a session are filed as background" "grep -q '^### .* | background' $f"
 check "lint passes" "$B lint >/dev/null"
-# hand-edited overflow is trimmed by the tick
-python3 - "$f" <<'EOF'
-import sys
-p=sys.argv[1]; s=open(p).read()
-s=s.replace("## Progress\n", "## Progress\n" + "".join("- 2026-01-01 10:%02d hand line %d\n" % (i, i) for i in range(5)))
-open(p,"w").write(s)
+# a summary written later goes where the work happened, not at the bottom
+"$B" new backdate-test "Backdate test" >/dev/null
+"$B" log backdate-test "written now" >/dev/null
+TODAY="$(date '+%Y-%m-%d')"
+"$B" log backdate-test "early work" --session early-sess --at "$TODAY 00:02" >/dev/null
+"$B" log backdate-test "earlier work" --session early-sess --at "$TODAY 00:01" >/dev/null
+bf="$HOME/brain/tasks/backdate-test.md"
+check "--at entry filed under its session, in time order, before later blocks" "[ \"\$(grep -E '^(### |- )' $bf | sed 's/ (.*)//' | tr '\n' '/' | cut -d/ -f1-3)\" = \"### $TODAY | session early-se/- 00:01 earlier work/- 00:02 early work\" ]"
+check "--at does not backdate the task's updated time" "! grep -q '^updated: $TODAY 00:0' $bf"
+check "--at rejects a bad time" "! $B log backdate-test x --at 'yesterday-ish' 2>/dev/null"
+check "--at rejects a future time" "! $B log backdate-test x --at '2099-01-01 10:00' 2>/dev/null"
+rm -f "$bf"
+# an old-format task with a Progress section is migrated into the log, nothing lost
+cat > "$HOME/brain/tasks/old-format-task.md" <<'EOF'
+---
+title: Old format
+status: active
+ticket:
+created: 2026-01-01
+updated: 2026-01-02 10:00
+sessions: []
+---
+## Goal
+Old goal
+
+## Direction
+Old direction
+
+## Progress
+- 2026-01-02 10:00 second thing
+- 2026-01-01 09:00 first thing
+
+## Next
+Old next
 EOF
-check "lint flags hand-made overflow" "! $B lint >/dev/null"
+of="$HOME/brain/tasks/old-format-task.md"
+check "lint flags an unmigrated Progress section" "! $B lint >/dev/null"
 "$B" tick --no-agent >/dev/null
-check "tick trims it back to 8" "[ \$(grep -c '^- 20' $f) -eq 8 ]"
+check "tick migrates Progress into the log" "! grep -q '^## Progress' $of && grep -q '^## Log' $of"
+check "migrated lines kept, oldest first, by date" "[ \"\$(grep -E '^(### |- )' $of | tr '\n' '/')\" = '### 2026-01-01 | earlier/- 09:00 first thing/### 2026-01-02 | earlier/- 10:00 second thing/' ]"
+check "migration keeps Goal, Direction and Next" "grep -q 'Old goal' $of && grep -q 'Old direction' $of && grep -q 'Old next' $of"
+rm -f "$of"
 check "bad slug rejected" "! $B new Bad_Slug x 2>/dev/null && ! $B new one x 2>/dev/null && ! $B new a-b-c-d-e x 2>/dev/null"
 
 echo "== follow-up times"
@@ -197,16 +243,20 @@ echo "== notifications de-duplicated"
 check "one inbox line per key" "[ \$(grep -c '| once' $HOME/brain/inbox.md) -eq 1 ]"
 
 echo "== session findings"
-mk_transcript() { # sid prompts tools mtime_minutes_ago
+# Every time in this block is relative to AT, the simulated clock the tick
+# runs with, so the checks do not depend on the real time of day.
+AT="$(date '+%Y-%m-%d') 10:00"
+at_minus() { python3 -c "import datetime as d,sys;print((d.datetime.strptime(sys.argv[1],'%Y-%m-%d %H:%M')-d.timedelta(minutes=int(sys.argv[2]))).strftime(sys.argv[3]))" "$AT" "$1" "${2:-%Y-%m-%d %H:%M}"; }
+mk_transcript() { # sid prompts tools mtime_minutes_before_AT
   p="$HOME/.claude/projects/-w/$1.jsonl"
   : > "$p"
   for i in $(seq 1 "$2"); do echo "{\"type\":\"user\",\"timestamp\":\"2026-10-08T09:0$i:00Z\",\"message\":{\"role\":\"user\",\"content\":\"please do step $i\"}}" >> "$p"; done
   for i in $(seq 1 "$3"); do echo "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"working $i\"},{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"make $i\"}}]}}" >> "$p"; done
-  python3 -c "import os,time;t=time.time()-60*$4;os.utime('$p',(t,t))"
+  python3 -c "import os,sys;t=float(sys.argv[2]);os.utime(sys.argv[1],(t,t))" "$p" "$(at_minus "$4" %s)"
   echo "$p"
 }
-T="$(python3 -c 'import datetime as d;print((d.datetime.now()-d.timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M"))')"
-TS="$(python3 -c 'import datetime as d;print((d.datetime.now()-d.timedelta(minutes=200)).strftime("%Y-%m-%d %H:%M"))')"
+T="$(at_minus 5)"
+TS="$(at_minus 200)"
 p1=$(mk_transcript triv-1 1 0 5);  printf '%s | start | triv-1 | /w | %s\n%s | end | triv-1 | /w | %s\n' "$TS" "$p1" "$T" "$p1" >> "$HOME/brain/sessions.log"
 p2=$(mk_transcript real-2 4 6 5);  printf '%s | start | real-2 | /w | %s\n%s | end | real-2 | /w | %s\n' "$TS" "$p2" "$T" "$p2" >> "$HOME/brain/sessions.log"
 p3=$(mk_transcript upd-3 4 6 5);   printf '%s | start | upd-3 | /w | %s\n%s | end | upd-3 | /w | %s\n' "$TS" "$p3" "$T" "$p3" >> "$HOME/brain/sessions.log"
@@ -217,19 +267,24 @@ printf '%s | start | edit-5 | /w | %s\n%s | end | edit-5 | /w | %s\n' "$TS" "$p5
 p6=$(mk_transcript noend-6 3 4 90); printf '%s | start | noend-6 | /w | %s\n' "$TS" "$p6" >> "$HOME/brain/sessions.log"
 "$B" new upd-target-task "Session update target" >/dev/null; "$B" link upd-target-task upd-3 >/dev/null
 "$B" new stall-target-task "Stall target" >/dev/null; "$B" link stall-target-task stall-4 >/dev/null
-python3 - "$HOME/brain/tasks/upd-target-task.md" <<'EOF'
-import sys,re,datetime as d
+p7=$(mk_transcript cov-7 4 6 5);   printf '%s | start | cov-7 | /w | %s\n%s | end | cov-7 | /w | %s\n' "$TS" "$p7" "$T" "$p7" >> "$HOME/brain/sessions.log"
+"$B" new covered-task "Covered" >/dev/null; "$B" link covered-task cov-7 >/dev/null
+printf '\n### %s | session cov-7 (w)\n- %s Deployed and verified\n' "$(at_minus 3 %Y-%m-%d)" "$(at_minus 3 %H:%M)" >> "$HOME/brain/tasks/covered-task.md"
+python3 - "$HOME/brain/tasks/upd-target-task.md" "$(at_minus 180)" <<'EOF'
+import sys,re
 p=sys.argv[1]; s=open(p).read()
-s=re.sub(r"updated: .*", "updated: "+(d.datetime.now()-d.timedelta(minutes=180)).strftime("%Y-%m-%d %H:%M"), s)
+s=re.sub(r"updated: .*", "updated: "+sys.argv[2], s)
 open(p,"w").write(s)
 EOF
-dry="$("$B" tick --dry-run --at "$(date '+%Y-%m-%d') 10:00")"
+dry="$("$B" tick --dry-run --at "$AT")"
 if [ "$(date +%u)" -le 5 ]; then
   check "trivial unlinked session filtered without a model" "! echo \"\$dry\" | grep -q triv-1"
   check "one-prompt session that edited a file is not trivial" "echo \"\$dry\" | grep -q '\"session\": \"edit-5\"'"
   check "unlinked session with no end line, idle 90 min, treated as ended" "echo \"\$dry\" | grep -q '\"session\": \"noend-6\"'"
   check "real unlinked session found" "echo \"\$dry\" | grep -q '\"session\": \"real-2\"' && echo \"\$dry\" | grep -q unlinked_session"
   check "ended session with stale task found" "echo \"\$dry\" | grep -q session_update && echo \"\$dry\" | grep -q upd-target-task"
+  check "linked session with nothing in the log gets a summary pass" "echo \"\$dry\" | grep -q '\"key\": \"update:upd-3'"
+  check "linked session already covered by the log is skipped" "! echo \"\$dry\" | grep -q '\"session\": \"cov-7\"'"
   check "stalled linked session found" "echo \"\$dry\" | grep -q stalled_session && echo \"\$dry\" | grep -q stall-4"
 else
   echo "  skip session-finding checks (weekend: outside working hours)"
@@ -245,6 +300,10 @@ with open(sys.argv[1],"w") as f:
         f.write(json.dumps({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"line %d"%i}]}})+"\n")
 EOF
 out="$(BRAIN_RUN_ID=r1 "$B" transcript big-5)"
+utc_t="$HOME/.claude/projects/-w/utc-9.jsonl"
+echo '{"type":"user","timestamp":"2026-07-01T09:30:00.000Z","message":{"role":"user","content":"utc check"}}' > "$utc_t"
+want="$(python3 -c 'import datetime as d;print(d.datetime(2026,7,1,9,30,tzinfo=d.timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"))')"
+check "transcript times are shown in local time" "$B transcript utc-9 | grep -q \"^$want OWNER: utc check\""
 check "transcript returns only the tail" "echo \"\$out\" | grep -q 'line 4999' && ! echo \"\$out\" | grep -q 'line 4800:'"
 for i in 2 3 4 5; do BRAIN_RUN_ID=r1 "$B" transcript big-5 >/dev/null; done
 check "6th transcript read in one run refused" "! BRAIN_RUN_ID=r1 $B transcript big-5 >/dev/null 2>&1"
@@ -254,10 +313,10 @@ echo "== concurrent session ends lose nothing"
 for i in $(seq 1 20); do
   printf '{"session_id":"conc-%s","cwd":"/w","transcript_path":""}' "$i" | "$HOME/brain/bin/session-end.sh" &
 done
-for i in $(seq 1 10); do "$B" progress api-rate-limits "parallel $i" >/dev/null & done
+for i in $(seq 1 10); do "$B" log api-rate-limits "parallel $i" >/dev/null & done
 wait; sleep 4
 check "all 20 end lines present" "[ \$(grep -c '| end | conc-' $HOME/brain/sessions.log) -eq 20 ]"
-check "all parallel progress writes applied (kept newest 8)" "[ \$(grep -c 'parallel' $HOME/brain/tasks/api-rate-limits.md) -eq 8 ]"
+check "all 10 parallel log writes applied" "[ \$(grep -c 'parallel' $HOME/brain/tasks/api-rate-limits.md) -eq 10 ]"
 check "working tree committed, no index.lock" "[ -z \"\$(git -C $HOME/brain status --porcelain)\" ] && [ ! -e $HOME/brain/.git/index.lock ]"
 check "end lines are in git" "git -C $HOME/brain show HEAD:sessions.log | grep -c 'conc-' | grep -q 20"
 

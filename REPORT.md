@@ -110,3 +110,20 @@ Also found: `--allowedTools` takes several values, so a prompt passed after it i
 8. **Non-reminder follow-ups due after hours wait for the next working morning** (spec default). A deploy started at 17:45 is reported at 08:00.
 9. **The session-update trigger is a heuristic**: the transcript ran ≥30 min past the task's `updated`. Short unrecorded sessions are missed, and long recorded ones may get a redundant agent pass (seen once: the agent correctly changed nothing).
 10. **Inbox lines are deleted once shown**, including when the session is a headless script the owner runs. They stay in git history.
+
+## Update 2026-10-08: macOS install and task log
+
+Installed and run on macOS (Darwin 25.5, bash 3.2, Python 3.14, Claude Code 2.1.294).
+
+**Now verified on macOS**
+- `tests/test.sh`: 97/97. Two session-finding checks used to depend on the real time of day (fixture times came from the real clock, the tick used a simulated 10:00); all times in that block are now relative to the simulated clock.
+- `tests/integration.sh` against the real model: every step behaved as intended (task created and linked, trivial question ignored, deploy follow-up added and checked by the agent, session summary written, forked `ask` left the original transcript untouched, idle tick used no model, export and lint clean). On macOS the login lives in the Keychain, which is found through `HOME`, so the script links the real `~/Library/Keychains` into its throwaway HOME. It also sets `NOTIFY=off` so test findings never reach the owner's screen.
+- `launchd` loads the job and fires `brain tick` (exit 0); `claude` authenticates from a LaunchAgent (Keychain reachable); a real agent run from `launchd` ticked a follow-up, logged it and showed an `osascript` banner.
+- SessionStart and SessionEnd fire in interactive terminal sessions, and the end hook commits.
+
+**Changed after first use**
+- **Tasks are journals.** Progress (newest 8, trimmed) is replaced by a Log that is never trimmed, oldest first, grouped under `### date | session abcd1234 (folder)` or `| background`. `set` logs every Goal/Direction/Next/status/title change with the old value; `new`, `link`, `decide`, `fdone` and `done` also log. Entries pick up `CLAUDE_CODE_SESSION_ID` automatically. `brain log` is the command (`progress` is an alias). Old tasks are migrated by the installer and the tick.
+- **Session summaries.** A linked session that ended with activity its log does not cover gets an agent pass that writes 1 to 5 lines of what happened, at the time it happened (`log --at`, filed in time order). Transcript times are converted from UTC to local first.
+- **Record at the start.** The board and skill now say to link or create the task before the first file edit, deploy or migration, and to add a deploy follow-up before running it. Before, "before your final reply" meant a long deploy session recorded nothing until the deploy had finished.
+
+**Still not verified**: SessionEnd in the desktop app; push to a GitHub remote; multi-day behaviour (stale, stalled, archive) on a real clock.

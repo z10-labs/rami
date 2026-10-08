@@ -13,7 +13,7 @@ in what sessions missed.
 
 | Path | What |
 |---|---|
-| `tasks/<slug>.md` | one file per task: Goal, Direction, Progress (max 8 lines), Next |
+| `tasks/<slug>.md` | one file per task: Goal, Direction, Next (the current state), then a Log of everything that happened, grouped by session and never trimmed |
 | `archive/<yyyy>/` | done tasks, moved here 14 days after they finish |
 | `decisions.md` | big decisions, newest first |
 | `followups.md` | `- [ ] YYYY-MM-DD HH:MM \| slug \| what to check` |
@@ -26,8 +26,10 @@ in what sessions missed.
 ## Daily use
 
 Work normally in Claude Code (desktop app or CLI). At session start Claude sees
-the board. It links the session to a task or creates one, and records
-milestones, decisions and follow-ups, saying one line at most about it.
+the board. As soon as real work starts it links the session to a task or
+creates one, then logs what happens, big decisions and follow-ups, saying one
+line at most about it. After a linked session ends, the background agent adds
+a short summary of anything that session did that the log does not cover yet.
 
 Ask things such as "what's on my board", "where was I on X", "what did we
 decide about Y", "remind me at 16:00 to …", or "X is done".

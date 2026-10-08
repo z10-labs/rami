@@ -29,8 +29,7 @@ BRAIN_CMD = os.path.join(BIN, "brain")
 
 TS = "%Y-%m-%d %H:%M"
 DAY = "%Y-%m-%d"
-MAX_PROGRESS = 8
-MAX_TASK_LINES = 40
+LOG_LINE_MAX = 300
 BOARD_TASKS = 25
 BOARD_FOLLOWUPS = 10
 BOARD_INBOX = 8
@@ -302,7 +301,13 @@ def parse_when(cfg, s, base=None):
 # --------------------------------------------------------------------------
 # task files
 
-SECTION_ORDER = ["Goal", "Direction", "Progress", "Next"]
+SECTION_ORDER = ["Goal", "Direction", "Next", "Log"]
+# Log headings: "### YYYY-MM-DD | session abcd1234 (folder)" or "| background".
+LOG_HEAD_RE = re.compile(r"^###\s+(\d{4}-\d{2}-\d{2})\s*\|\s*(.*?)\s*$")
+LOG_ITEM_RE = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s+(.*?)\s*$")
+OLD_PROGRESS_RE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(.*?)\s*$")
+# Lines the brain writes itself; they do not count as a record of the work.
+AUTO_LOG_PREFIXES = ("Session linked", "Task created")
 
 
 class Task(object):
@@ -390,11 +395,24 @@ class Task(object):
                     return
         self.sections.append(new)
 
+    def remove_section(self, name):
+        self.sections = [s for s in self.sections if s[0].lower() != name.lower()]
+
     def text_of(self, name):
         return "\n".join(self.section(name) or []).strip()
 
-    def progress(self):
-        return [l for l in (self.section("Progress") or []) if l.strip().startswith("-")]
+    def log_entries(self):
+        """[(datetime, source, text)] in file order (oldest first)."""
+        out, day, src = [], None, ""
+        for ln in self.section("Log") or []:
+            m = LOG_HEAD_RE.match(ln)
+            if m:
+                day, src = m.group(1), m.group(2)
+                continue
+            m = LOG_ITEM_RE.match(ln)
+            if m and day:
+                out.append((parse_ts("%s %s" % (day, m.group(1))), src, m.group(2)))
+        return out
 
     # rendering -------------------------------------------------------
     def render(self):
@@ -415,19 +433,30 @@ class Task(object):
         self.set("updated", fmt(t or now()))
 
     def save(self):
-        self.trim()
+        self.migrate()
         write_atomic(self.path, self.render())
 
-    def trim(self):
+    def migrate(self):
+        """Move an old-format Progress section (newest first) into the Log."""
         prog = self.section("Progress")
-        if prog is not None:
-            items = [l for l in prog if l.strip().startswith("-")]
-            if len(items) > MAX_PROGRESS:
-                keep = items[:MAX_PROGRESS]
-                self.set_section("Progress", keep)
-
-    def line_count(self):
-        return len(self.render().splitlines())
+        if prog is None:
+            return False
+        moved, day = [], None
+        for ln in reversed([l for l in prog if l.strip()]):
+            m = OLD_PROGRESS_RE.match(ln)
+            if m:
+                if m.group(1) != day:
+                    day = m.group(1)
+                    if moved:
+                        moved.append("")
+                    moved.append("### %s | earlier" % day)
+                moved.append("- %s %s" % (m.group(2), m.group(3)))
+            elif ln.strip():
+                moved.append(ln)
+        rest = self.section("Log") or []
+        self.remove_section("Progress")
+        self.set_section("Log", moved + ([""] if moved and rest else []) + rest)
+        return True
 
     def as_dict(self, archived=False):
         return {
@@ -442,7 +471,8 @@ class Task(object):
             "sessions": self.get_list("sessions"),
             "goal": self.text_of("Goal"),
             "direction": self.text_of("Direction"),
-            "progress": [re.sub(r"^\s*-\s*", "", l) for l in self.progress()],
+            "log": [{"at": fmt(w) if w else "", "source": src, "text": txt}
+                    for w, src, txt in self.log_entries()],
             "next": self.text_of("Next"),
             "markdown": read(self.path),
         }
@@ -542,17 +572,94 @@ def tick_followup(fid, result=None):
     write_atomic(FOLLOWUPS, "\n".join(lines) + "\n")
     if result and os.path.isfile(task_path(f.slug)):
         t = load_task(f.slug)
-        add_progress(t, result)
+        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result))
         t.save()
     return f
 
 
-def add_progress(t, text, when=None):
-    when = when or now()
-    line = "- %s %s" % (fmt(when), one_line(text, 140))
-    prog = t.progress()
-    t.set_section("Progress", [line] + prog)
-    t.touch(when)
+def log_source(session=None):
+    """Heading source for a log entry: the session it came from, else background."""
+    sid = session
+    if not sid and not is_agent_run():
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid:
+        return "background"
+    cwd = load_sessions().get(sid, {}).get("cwd", "")
+    return "session %s%s" % (sid[:8], " (%s)" % os.path.basename(cwd.rstrip("/")) if cwd else "")
+
+
+def log_blocks(lines):
+    """Split Log lines into [[heading, [item lines]]]; text before any heading is kept."""
+    blocks = [[None, []]]
+    for ln in lines:
+        if ln.startswith("### "):
+            blocks.append([ln.strip(), []])
+        elif ln.strip():
+            blocks[-1][1].append(ln)
+    return blocks if blocks[0][1] else blocks[1:]
+
+
+def block_time(block, last=False):
+    """Time of a block's first item (or last item), from its heading's day."""
+    m = LOG_HEAD_RE.match(block[0] or "")
+    items = [i for i in (LOG_ITEM_RE.match(l) for l in block[1]) if i]
+    if last:
+        items = items[::-1]
+    hm = items[0].group(1) if items else "00:00"
+    return parse_ts("%s %s" % (m.group(1), hm)) if m else None
+
+
+def add_log(t, text, when=None, session=None):
+    """Add one line to the task's Log under the heading for its day and source.
+
+    A normal entry is appended. A backdated one (when < now) goes into the
+    block for that day and source, or a new block placed in time order, so a
+    summary written later still sits where the work happened."""
+    at = when or now()
+    head = "### %s | %s" % (at.strftime(DAY), log_source(session))
+    item = "- %s %s" % (at.strftime("%H:%M"), one_line(text, LOG_LINE_MAX))
+    blocks = log_blocks(t.section("Log") or [])
+    backdated = when is not None and blocks and (block_time(blocks[-1], last=True) or at) > at
+    if not backdated:
+        if blocks and blocks[-1][0] == head:
+            blocks[-1][1].append(item)
+        else:
+            blocks.append([head, [item]])
+    else:
+        same = [b for b in blocks if b[0] == head]
+        if same:
+            b = same[-1]
+            pos = len(b[1])
+            for i, ln in enumerate(b[1]):
+                m = LOG_ITEM_RE.match(ln)
+                if m and m.group(1).zfill(5) > at.strftime("%H:%M"):
+                    pos = i
+                    break
+            b[1].insert(pos, item)
+        else:
+            pos = len(blocks)
+            for i, b in enumerate(blocks):
+                bt = block_time(b)
+                if bt and bt > at:
+                    pos = i
+                    break
+            blocks.insert(pos, [head, [item]])
+    out = []
+    for h, items in blocks:
+        if out:
+            out.append("")
+        if h:
+            out.append(h)
+        out.extend(items)
+    t.set_section("Log", out)
+    t.touch(max(at, now()) if when else at)
+
+
+def session_log_entries(t, sid):
+    """Entries filed under this session's headings, minus the brain's own lines."""
+    tag = "session " + sid[:8]
+    return [(w, txt) for w, src, txt in t.log_entries()
+            if src.startswith(tag) and not txt.startswith(AUTO_LOG_PREFIXES)]
 
 
 # --------------------------------------------------------------------------
@@ -576,7 +683,7 @@ def load_sessions():
             s["end"] = None if s["end"] and s["end"] < t else s["end"]
         elif kind == "end":
             s["end"] = t
-        if len(parts) > 3 and parts[3]:
+        if len(parts) > 3 and parts[3] and not s["cwd"]:
             s["cwd"] = parts[3]
         if len(parts) > 4 and parts[4]:
             s["transcript"] = parts[4]
@@ -735,13 +842,15 @@ def board_text(session_id="", mark_read=False):
     t = now()
     out = ["# Brain board %s (%s)%s" % (fmt(t), t.strftime("%a"),
                                         (" | this session: " + session_id) if session_id else "")]
-    out.append("Background bookkeeping, one line at most: before your final reply in any "
-               "session that changes files, names a ticket/PR, or starts something (deploy, "
-               "migration, release), use the `brain` skill to link this session to its task "
-               "or create one, even for small work. Pure questions: do nothing, say nothing.")
-    out.append("Add a follow-up (`~/brain/bin/brain followup`) when a deploy/release starts "
-               "(+30m), a long build/test/migration starts, you wait on someone (next-workday), "
-               "a task gets blocked (+1d), or the owner says 'remind me'.")
+    out.append("Background bookkeeping, one line at most. As soon as this session starts "
+               "real work (before the first file edit, before running a deploy, migration or "
+               "release, or when a ticket/PR is named), use the `brain` skill to link this "
+               "session to its task or create one, even for small work. Then record what "
+               "happens as you go with `~/brain/bin/brain log SLUG \"...\"`: findings, "
+               "changes, results, problems. Pure questions: do nothing, say nothing.")
+    out.append("Add a follow-up (`~/brain/bin/brain followup`) BEFORE running a deploy/release "
+               "(+30m), when a long build/test/migration starts, you wait on someone "
+               "(next-workday), a task gets blocked (+1d), or the owner says 'remind me'.")
     tasks = [x for x in all_tasks() if x.get("status", "active") != "done"]
     order = {"blocked": 0, "active": 1, "waiting": 2}
     tasks.sort(key=lambda x: (order.get(x.get("status"), 3), -task_updated(x).timestamp()))
@@ -885,9 +994,18 @@ def condense_entry(d):
     text = one_line(" ".join(p for p in parts if p), 600)
     if not text:
         return None
-    stamp = (d.get("timestamp") or "")[:16].replace("T", " ")
+    stamp = local_stamp(d.get("timestamp") or "")
     who = "OWNER" if typ == "user" and not text.startswith("[result") else typ.upper()
     return "%s %s: %s" % (stamp, who, text)
+
+
+def local_stamp(iso):
+    """'2026-10-08T18:07:12.345Z' (UTC) -> '2026-10-08 20:07' in local time."""
+    try:
+        u = dt.datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return iso[:16].replace("T", " ")
+    return u.astimezone().strftime(TS)
 
 
 def transcript_summary(path):
@@ -1044,10 +1162,11 @@ def prune_followups(t):
     return len(drop)
 
 
-def enforce_size():
+def migrate_tasks():
+    """Rewrite old-format tasks (Progress section) into the Log format."""
     fixed = []
     for x in all_tasks():
-        if len(x.progress()) > MAX_PROGRESS:
+        if x.section("Progress") is not None:
             x.save()
             fixed.append(x.slug)
     return fixed
@@ -1110,9 +1229,14 @@ def find_work(cfg, t, st, in_hours):
                 if key in handled or not mt:
                     continue
                 for x in linked:
-                    if mt - task_updated(x) > gap:
+                    entries = session_log_entries(x, sid)
+                    last = max([w for w, _ in entries if w] or [None]) if entries else None
+                    if last is None or mt - last > gap:
+                        if last is None and path and is_trivial(transcript_stats(path)):
+                            continue
                         findings.append({"kind": "session_update", "key": key, "session": sid,
-                                         "task": x.slug, "task_updated": x.get("updated"),
+                                         "task": x.slug,
+                                         "last_logged": fmt(last) if last else "nothing yet",
                                          "last_activity": fmt(mt), "ended": fmt(end)})
                         break
         elif not end and s["start"] and s["start"] >= recent - dt.timedelta(days=7):
@@ -1209,13 +1333,13 @@ def cmd_tick(dry_run=False, no_agent=False, at=None):
             with write_lock():
                 moved = archive_done(cfg, t)
                 pruned = prune_followups(t)
-                trimmed = enforce_size()
+                migrated = migrate_tasks()
             if moved:
                 changed.append("archived " + ", ".join(moved))
             if pruned:
                 changed.append("pruned %d old follow-ups" % pruned)
-            if trimmed:
-                changed.append("trimmed " + ", ".join(trimmed))
+            if migrated:
+                changed.append("migrated " + ", ".join(migrated))
         findings, reminders = find_work(cfg, t, st, in_hours)
 
         # Reminders the owner set: deterministic, any hour.
@@ -1349,10 +1473,10 @@ sessions: [{sessions}]
 ## Direction
 {direction}
 
-## Progress
-
 ## Next
 {next}
+
+## Log
 """
 
 
@@ -1377,6 +1501,9 @@ def cmd_new(a):
         text = text.replace("ticket: " + ", ".join(a.ticket), "ticket: [%s]" % ", ".join(a.ticket))
     with write_lock():
         write_atomic(task_path(slug), text)
+        x = load_task(slug)
+        add_log(x, "Task created", t, session=a.session)
+        x.save()
     print("created task %s" % slug)
 
 
@@ -1386,52 +1513,84 @@ def cmd_link(slug, sid):
         sids = x.get_list("sessions")
         if sid not in sids:
             x.set_list("sessions", sids + [sid])
-            x.touch()
+            add_log(x, "Session linked", session=sid)
             x.save()
     print("linked %s to %s" % (sid[:8], slug))
 
 
 FIELDS_SECTION = {"goal": ("Goal", 2), "direction": ("Direction", 4), "next": ("Next", 2)}
+FIELD_LOG_LABEL = {"goal": "Goal changed to", "direction": "Direction changed to", "next": "Next"}
+
+
+def change_note(label, new, old):
+    """'Next: new (was: old)', with the old value left out when there was none."""
+    new, old = one_line(new, 140), one_line(old, 140)
+    return "%s: %s" % (label, new) + (" (was: %s)" % old if old and old != "TBD" else "")
 
 
 def cmd_set(slug, field, value):
     field = field.lower()
     with write_lock():
         x = load_task(slug)
+        note = None
         if field in FIELDS_SECTION:
             name, n = FIELDS_SECTION[field]
-            x.set_section(name, limit_lines(value, n).splitlines())
+            old, new = x.text_of(name), limit_lines(value, n)
+            x.set_section(name, new.splitlines())
+            if new != old:
+                note = change_note(FIELD_LOG_LABEL[field], new, old)
         elif field == "status":
             if value not in STATUSES:
                 raise BrainError("status must be one of %s" % ", ".join(STATUSES))
+            old = x.get("status") or "active"
             x.set("status", value)
+            if value != old:
+                note = "Status: %s -> %s" % (old, value)
         elif field == "title":
-            x.set("title", one_line(value, 80))
+            old, new = x.get("title"), one_line(value, 80)
+            x.set("title", new)
+            if new != old:
+                note = change_note("Title", new, old)
         elif field == "ticket":
             items = x.get_list("ticket")
+            added = []
             for v in re.split(r"[,\s]+", value.strip()):
                 if v and v not in items:
                     items.append(v)
+                    added.append(v)
             x.set("ticket", items[0] if len(items) == 1 else "[" + ", ".join(items) + "]")
+            if added:
+                note = "Ticket added: " + ", ".join(added)
         else:
             raise BrainError("field must be goal, direction, next, status, title or ticket")
+        if note:
+            add_log(x, note)
         x.touch()
         x.save()
     print("%s: %s updated" % (slug, field))
 
 
-def cmd_progress(slug, text):
+def cmd_log(slug, text, session=None, at=None):
+    when = None
+    if at:
+        when = parse_ts(at)
+        if when is None:
+            raise BrainError("--at must be 'YYYY-MM-DD HH:MM' (local time): %r" % at)
+        if when > now() + dt.timedelta(minutes=5):
+            raise BrainError("--at is in the future: %s" % at)
     with write_lock():
         x = load_task(slug)
-        add_progress(x, text)
+        add_log(x, text, when, session=session)
         x.save()
-    print("%s: progress noted" % slug)
+    print("%s: logged" % slug)
 
 
 def cmd_done(slug, text):
     with write_lock():
         x = load_task(slug)
-        add_progress(x, text or "Done")
+        add_log(x, text or "Done")
+        if x.get("status") != "done":
+            add_log(x, "Status: %s -> done" % (x.get("status") or "active"))
         x.set("status", "done")
         x.set_section("Next", ["None (done)."])
         x.save()
@@ -1461,6 +1620,10 @@ def cmd_decide(a):
             head.pop()
         text = "\n".join(head) + "\n\n" + entry + ("\n" + "\n".join(lines[i:]) if lines[i:] else "")
         write_atomic(DECISIONS, text.rstrip() + "\n")
+        if os.path.isfile(task_path(a.slug)):
+            x = load_task(a.slug)
+            add_log(x, "Decision: %s (see decisions.md)" % one_line(a.title, 80))
+            x.save()
     print("decision logged for %s" % a.slug)
 
 
@@ -1490,10 +1653,12 @@ def cmd_lint():
         probs = []
         if not slug_ok(x.slug):
             probs.append("slug not kebab-case 2-4 words")
-        if len(x.progress()) > MAX_PROGRESS:
-            probs.append("progress has %d lines" % len(x.progress()))
-        if x.line_count() > MAX_TASK_LINES:
-            probs.append("%d lines (limit ~%d)" % (x.line_count(), MAX_TASK_LINES))
+        if x.section("Progress") is not None:
+            probs.append("old Progress section (the next tick moves it into the Log)")
+        for name, n in FIELDS_SECTION.values():
+            got = len([l for l in (x.section(name) or []) if l.strip()])
+            if got > n:
+                probs.append("%s has %d lines (limit %d)" % (name, got, n))
         if x.get("status") not in STATUSES:
             probs.append("bad status %r" % x.get("status"))
         for k in ("title", "created", "updated"):
@@ -1618,14 +1783,16 @@ USAGE = """brain: the second brain command
   show SLUG                     print a task file
   tick [--dry-run] [--no-agent] run the periodic check now
   export [FILE|-]               all tasks, decisions, follow-ups, sessions as JSON
-  lint                          check task files against the size rules
+  lint                          check task files against the format rules
   commit [MESSAGE]              commit the store (and push in the background)
 
   new SLUG TITLE [--goal G] [--direction D] [--next N] [--ticket T]... [--session ID]
   link SLUG SESSION_ID
   set SLUG goal|direction|next|status|title|ticket VALUE
-  progress SLUG TEXT            add a milestone line (keeps the newest 8)
-  done SLUG [TEXT]              mark done, final progress line, close follow-ups
+  log SLUG TEXT [--session ID] [--at 'YYYY-MM-DD HH:MM']
+                                add a line to the task's log (progress is an alias);
+                                --at files it at the time the work happened
+  done SLUG [TEXT]              mark done, final log line, close follow-ups
   decide SLUG TITLE --decision D --why W [--rejected R]
   followup WHEN SLUG WHAT [--remind]   WHEN: +30m +2h +1d next-workday HH:MM tomorrow 'YYYY-MM-DD HH:MM'
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
@@ -1713,11 +1880,17 @@ def main(argv):
         a = p.parse_args(rest)
         cmd_set(a.slug, a.field, a.value)
         return 0
-    if cmd == "progress":
+    if cmd in ("log", "progress"):
         p.add_argument("slug")
         p.add_argument("text")
+        p.add_argument("--session")
+        p.add_argument("--at")
         a = p.parse_args(rest)
-        cmd_progress(a.slug, a.text)
+        cmd_log(a.slug, a.text, a.session, a.at)
+        return 0
+    if cmd == "_migrate":
+        for slug in migrate_tasks():
+            print("migrated %s to the log format" % slug)
         return 0
     if cmd == "done":
         p.add_argument("slug")

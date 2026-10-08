@@ -17,7 +17,8 @@ denied in this unattended run.
     {{BRAIN}} show SLUG
     {{BRAIN}} transcript SESSION_ID        condensed tail of a transcript (max 5 per run)
     {{BRAIN}} ask SESSION_ID "QUESTION"    forked headless resume of an IDLE session (max 2 per run)
-    {{BRAIN}} progress SLUG "milestone"
+    {{BRAIN}} log SLUG "what happened" --session SESSION_ID --at "YYYY-MM-DD HH:MM"
+                                           one line per call; --at is when it happened
     {{BRAIN}} set SLUG direction|next|status|ticket "VALUE"
     {{BRAIN}} link SLUG SESSION_ID
     {{BRAIN}} new SLUG "Title" --goal "..." --direction "..." --next "..." --session SESSION_ID
@@ -36,20 +37,30 @@ Never read a whole transcript file; use `{{BRAIN}} transcript`.
   read-only commands above (the follow-up text or the task file usually names
   the PR, run or URL). Then `fdone ID "result in one line"`. If the result is
   bad, or you could not check it, also `notify` the owner (key `fu:ID`).
-- session_update: read the session's transcript tail. Update the task:
-  `progress` only for real milestones (shipped, merged, proven, blocked,
-  abandoned), rewrite Direction and Next if they changed. Log a decision only
-  if it is hard to reverse, changes direction/scope, or someone would later
-  ask "why did we do it this way?" (when unsure, do not log).
+- session_update: the task's log does not yet cover what this session did
+  (`last_logged` vs `last_activity`). `show` the task, read the session's
+  transcript tail, then write what happened in that session to the task log
+  with `log SLUG "..." --session SESSION_ID --at "YYYY-MM-DD HH:MM"`, taking
+  the time from the transcript line where it happened (transcript times are
+  already local): 1 to 5 lines, oldest first,
+  plain facts the owner will want later: what was found, what changed (files,
+  PRs, deploys, stacks), results, problems, what was left open. Skip anything
+  the log already says. Then `set` Direction and Next if they changed (the
+  change is logged for you). Log a decision only if it is hard to reverse,
+  changes direction/scope, or someone would later ask "why did we do it this
+  way?" (when unsure, do not log).
 - unlinked_session: read the transcript tail. If it worked on an open task,
   `link` it. If it was real work with no task, `new` a task (slug kebab-case,
-  2-4 words) linked to the session. If trivial (a quick question), do nothing.
+  2-4 words) with `--session SESSION_ID`. Either way, then log what happened
+  in that session as for session_update. If trivial (a quick question), do
+  nothing.
 - stalled_session / stale_task: read the latest linked session's transcript.
   If the state is clear, update the task. If work stopped mid-way or is waiting
   on the owner, `notify` (key `stalled:SESSION` or `stale:SLUG`). Only if the
   transcript does not answer "what is done, what is left, what is blocking",
   use `ask` with: "In 3 lines: what is done, what is left, what is blocking?"
-  and record the answer. `ask` refuses live sessions; that is fine, move on.
+  and `log` the answer with `--session`. `ask` refuses live sessions; that is
+  fine, move on.
 
 Notify the owner only for: a failed or uncheckable follow-up, a session stalled
 waiting on the owner, a task stale for more than 2 working days. Use one line,

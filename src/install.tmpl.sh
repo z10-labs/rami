@@ -98,6 +98,7 @@ __BRAIN_EOF__
 [ -e "$BRAIN/sessions.log" ] || { : > "$BRAIN/sessions.log"; say "created $BRAIN/sessions.log"; }
 
 "$BRAIN/bin/brain" _config
+"$BRAIN/bin/brain" _migrate
 
 # Keep a copy of this installer so `~/brain/bin/install-brain.sh --uninstall` always works.
 if [ -f "$0" ] && [ "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" != "$BRAIN/bin/install-brain.sh" ]; then

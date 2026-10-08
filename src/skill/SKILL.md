@@ -1,6 +1,6 @@
 ---
 name: brain
-description: Owner's second brain at ~/brain. Use in EVERY work session, without being asked, as soon as the work is clear - match the session to a task, record milestones, big decisions and follow-ups. Also use when the owner asks "what's on my board", "where was I on X", "what did we decide about Y", "remind me", or says a task is done.
+description: Owner's second brain at ~/brain. Use in EVERY work session, without being asked, as soon as real work starts (first file edit, a deploy/migration/release, a ticket named) - match the session to a task, then log what happens, big decisions and follow-ups. Also use when the owner asks "what's on my board", "where was I on X", "what did we decide about Y", "remind me", or says a task is done.
 ---
 
 # Brain: background task bookkeeping
@@ -23,7 +23,7 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 ~/brain/bin/brain new SLUG "Title" --goal "..." --direction "..." --next "..." [--ticket ID] --session SESSION_ID
 ~/brain/bin/brain link SLUG SESSION_ID
 ~/brain/bin/brain set SLUG next|direction|goal|status|title|ticket "VALUE"
-~/brain/bin/brain progress SLUG "milestone"
+~/brain/bin/brain log SLUG "what happened"
 ~/brain/bin/brain done SLUG "final line"
 ~/brain/bin/brain decide SLUG "short title" --decision "..." --why "..." --rejected "..."
 ~/brain/bin/brain followup WHEN SLUG "what to check"   # WHEN: +30m +2h +1d next-workday HH:MM tomorrow "YYYY-MM-DD HH:MM"
@@ -31,7 +31,11 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 ~/brain/bin/brain fdone FOLLOWUP_ID "result"
 ```
 
-## 1. Match (once the work is clear)
+## 1. Match (as soon as real work starts)
+
+Do this BEFORE the first file edit, before running a deploy, migration or
+release, or as soon as a ticket/PR is named. Not at the end of the session:
+sessions often end abruptly, and a deploy is exactly when the end comes late.
 
 - Match the work to an open task on the board. Matched: `link SLUG SESSION_ID`.
 - No match: `new` with Goal (1-2 lines: what done looks like), Direction (2-4
@@ -50,12 +54,19 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 A Jira/Linear id, GitHub issue or PR URL mentioned for the task: `set SLUG ticket ID`
 (adds to the list; a task may have several).
 
-## 3. Progress
+## 3. Log what happens
 
-- `progress` only at milestones: shipped, merged, proven, blocked, abandoned.
-  Not routine steps ("edited file", "ran tests").
-- Rewrite Direction and Next with `set` when they change.
-- No code, logs or long explanation. Link to the file, PR or ticket.
+The task's Log is its history: the owner reads it later to learn what
+actually happened. It is never trimmed, and entries are filed under this
+session automatically.
+
+- `log` as you go, one line per call: what you found, what you changed and
+  where, results (tests, deploys, stacks), problems, what was left open.
+- Not noise: no "read file", "ran ls", or each small edit.
+- Before your final reply, make sure the session's outcome is in the log.
+- Rewrite Direction and Next with `set` when they change. The old value is
+  logged for you, so nothing is lost.
+- No code, logs or long explanation. Name the file, PR, ticket or stack.
 
 ## 4. Decisions
 
@@ -73,7 +84,7 @@ Add one when something will need checking later. Put what to check in the text
 
 | Trigger | WHEN |
 |---|---|
-| Deploy or release started | `+30m` |
+| Deploy or release about to run (add it before running) | `+30m` |
 | Long test run, build or migration started | when it should finish, else `+30m` |
 | Waiting on a review, reply or another team | `next-workday` (09:00) |
 | Task set to blocked | `+1d` |

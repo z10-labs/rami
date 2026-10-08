@@ -12,8 +12,9 @@ One or two lines: what done looks like.
 ## Direction
 Two to four lines: the current approach and why.
 
-## Progress
-- YYYY-MM-DD HH:MM one line per milestone, newest first (max 8)
-
 ## Next
 The single next step.
+
+## Log
+### YYYY-MM-DD | session abcd1234 (folder)
+- HH:MM one line per thing that happened, oldest first, never trimmed
