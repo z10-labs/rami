@@ -1,0 +1,4 @@
+.state/
+*.tmp.*
+config.bak-*
+brain-export-*.json

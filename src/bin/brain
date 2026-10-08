@@ -1,0 +1,5 @@
+#!/bin/bash
+# brain: entry point. All logic lives in brain.py next to this file.
+here="$(cd "$(dirname "$0")" && pwd)"
+py="$(command -v python3 || echo /usr/bin/python3)"
+exec "$py" "$here/brain.py" "$@"
