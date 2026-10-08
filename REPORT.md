@@ -127,3 +127,29 @@ Installed and run on macOS (Darwin 25.5, bash 3.2, Python 3.14, Claude Code 2.1.
 - **Record at the start.** The board and skill now say to link or create the task before the first file edit, deploy or migration, and to add a deploy follow-up before running it. Before, "before your final reply" meant a long deploy session recorded nothing until the deploy had finished.
 
 **Still not verified**: SessionEnd in the desktop app; push to a GitHub remote; multi-day behaviour (stale, stalled, archive) on a real clock.
+
+## Update 2026-10-08 (night): the brain page and its backends
+
+Built from the Claude Design file "Second Brain" (project "Second brain AI task system"), one screen at a time, backend first. Each backend is a separate module used by both the CLI and `brain serve`.
+
+| Screen | Backend (CLI) | What it does |
+|---|---|---|
+| 01 Inbox | `brain_captures.py` (`capture`, `captures`, `capture-accept`, `capture-dismiss`) | Quick notes in `captures.md`. A model-free suggestion per note: a line in a matching task's log (keyword overlap), a reminder (text starts with "remind…"; the day and time are read from the text: weekday, today/tomorrow, 4pm, 16:30), or a new task with a slug. Accept applies it or an override. Reminders with no task and the brain's messages are listed too. |
+| 02 Today | (existing) | Adds a project filter (`#today/@repo`). |
+| 03 Ask | `brain_ask.py` (`query`) | `claude -p` in `~/brain` as an agent run, with Read/Grep/Glob and the read-only brain commands only; answer plus refs (only real task slugs kept); history in `.state/ask.jsonl`; one question at a time. |
+| 04 Graph | `brain_graph.py` (`graph`) | Projects, open tasks, decisions; task to project, task to task when a session worked on both, decision to task. Deterministic force layout in the page. |
+| 05 Projects | `brain_projects.py` (`projects`) | Tasks grouped by the git repo (else folder) where their latest session started; state is the most urgent open task. |
+| 06 System | `brain_status.py` (`status`, `config`) | Health: launchd job, last tick age, agent runs/failures, claude CLI, session hooks, git and backup remote; store counts; 24-hour activity; recent ticks. `config` changes one known key with validation; the page may only change NOTIFY and AGENT_MODEL. |
+| Cmd-K | `brain_search.py` (`search`) | All words must match one field; ranked title > goal/next > decision > log, then newest. |
+
+**Verified**: `tests/test.sh` 200/200. Every screen at 320, 375, 768, 1024 and 1440 px in light and dark: no horizontal overflow, no console errors (Playwright with the installed Chrome, against a copy of the store). Two QA rounds by a separate browser-testing agent with no knowledge of the code found 20 issues (duplicate capture ids, process-all with stale suggestions, focus lost after re-renders, Enter on a row's checkbox, Cmd-K Enter racing the search, filter vs deep link, timers outliving their screen, contrast failures, raw Markdown in answers, reminders ignoring "on Friday"). All were fixed and re-checked in the browser. Ask was checked with the real model on a copy of the store (about 15 s per answer).
+
+**Found and fixed: the test suite unloaded the owner's real launchd job.** The job label `com.brain.tick` is per user, not per HOME, so `tests/test.sh` and `tests/integration.sh` (which run the real installer in a throwaway HOME) replaced the real job with the test one, and the test's uninstall then removed it. The real brain went 74 minutes without a tick before this was noticed (21:16 to 22:30 on 2026-10-08). The installer now skips launchd when `BRAIN_NO_LAUNCHD=1`, both test scripts set it, a test checks it, and a full test run was confirmed to leave the real job loaded. The System screen's "last tick" check would have shown this as a warning.
+
+**Security of the page**: 127.0.0.1 only, per-run token on every API call, Host and Origin checks, JSON-only writes, 64 KB body cap, CSP without inline scripts or styles (styles are set through the CSSOM), and every value from the brain is inserted as text.
+
+**Known limits**
+- `brain.py` is 2,100+ lines, over the 800-line guideline; new code went into modules, but the CLI dispatch still lives there.
+- Capture suggestions are keyword-based, so a note can be attached to the wrong task; the dropdown lets the owner correct it before accepting.
+- Ask costs one model call per question and needs the Claude login, like the agent.
+- The design's 07 Meet (call recording) and hardware side panel are not built: Rami has no recording or local models.

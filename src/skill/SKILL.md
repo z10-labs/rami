@@ -29,6 +29,8 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 ~/brain/bin/brain followup WHEN SLUG "what to check"   # WHEN: +30m +2h +1d next-workday HH:MM tomorrow "YYYY-MM-DD HH:MM"
 ~/brain/bin/brain followup WHEN SLUG "what" --remind   # owner reminders (fire at any hour)
 ~/brain/bin/brain fdone FOLLOWUP_ID "result"
+~/brain/bin/brain search "words"                       # tasks, log lines, decisions, archive
+~/brain/bin/brain capture-accept CAPTURE_ID --kind log --dest SLUG
 ```
 
 ## 1. Match (as soon as real work starts)
@@ -102,8 +104,14 @@ Owner says a task is done: `done SLUG "final line"` (sets status, closes its fol
 ## 8. Recall
 
 "What's on my board", "where was I on X", "what did we decide about Y": answer
-briefly from `~/brain` (`board`, `show SLUG`, `grep -i` in `~/brain/decisions.md`,
-`~/brain/archive/`).
+briefly from `~/brain` (`board`, `search "words"`, `show SLUG`).
+
+## 9. Captures
+
+The board's Captures section lists the owner's quick notes (typed on the
+brain page). If one is clearly about this session's work, file it with
+`capture-accept ID --kind log --dest SLUG` (that adds it to the task's log;
+do not log it again). Leave the rest for the owner.
 
 ## Never
 

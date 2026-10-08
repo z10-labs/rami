@@ -33,6 +33,7 @@ LOG_LINE_MAX = 300
 BOARD_TASKS = 25
 BOARD_FOLLOWUPS = 10
 BOARD_INBOX = 8
+BOARD_CAPTURES = 5
 LINE_MAX = 160
 TRANSCRIPT_TAIL_LINES = 200
 STATUSES = ("active", "waiting", "blocked", "done")
@@ -881,6 +882,16 @@ def board_text(session_id="", mark_read=False):
         out.append(one_line("- %s%s %s | %s | %s" % (mark, f.id, fmt(f.due), f.slug, f.what)))
     if len(open_fus) > BOARD_FOLLOWUPS:
         out.append("- … %d more in ~/brain/followups.md" % (len(open_fus) - BOARD_FOLLOWUPS))
+    import brain_captures
+    caps = [c for c in brain_captures.load(sys.modules[__name__])[1] if not c.done]
+    if caps:
+        out.append("")
+        out.append("## Captures (owner's unsorted notes; if one belongs to this work, "
+                   "log it there and run `~/brain/bin/brain capture-accept ID --kind log --dest SLUG`)")
+        for c in caps[-BOARD_CAPTURES:]:
+            out.append(one_line("- %s %s | %s" % (c.id, c.at, c.text)))
+        if len(caps) > BOARD_CAPTURES:
+            out.append("- … %d more in ~/brain/captures.md" % (len(caps) - BOARD_CAPTURES))
     inbox = inbox_items()
     if inbox:
         out.append("")
@@ -1487,7 +1498,7 @@ def limit_lines(text, n):
     return "\n".join(lines[:n])
 
 
-def cmd_new(a):
+def cmd_new(a, quiet=False, note="Task created", source=None):
     slug = a.slug
     if not slug_ok(slug):
         raise BrainError("slug must be kebab-case, 2 to 4 words: %r" % slug)
@@ -1504,9 +1515,10 @@ def cmd_new(a):
     with write_lock():
         write_atomic(task_path(slug), text)
         x = load_task(slug)
-        add_log(x, "Task created", t, session=a.session)
+        add_log(x, note, t, session=a.session, source=source)
         x.save()
-    print("created task %s" % slug)
+    if not quiet:
+        print("created task %s" % slug)
 
 
 def cmd_link(slug, sid):
@@ -1641,7 +1653,7 @@ def cmd_decide(a):
     print("decision logged for %s" % a.slug)
 
 
-def cmd_followup(when, slug, what, remind=False):
+def cmd_followup(when, slug, what, remind=False, quiet=False):
     cfg = load_config()
     t = parse_when(cfg, when)
     what = one_line(what, 160).replace("|", "/")
@@ -1652,7 +1664,8 @@ def cmd_followup(when, slug, what, remind=False):
         if not os.path.isfile(FOLLOWUPS):
             write_atomic(FOLLOWUPS, "# Follow-ups\n\n")
         append_line(FOLLOWUPS, line)
-    print("follow-up %s set for %s" % (short_id("%s|%s|%s" % (fmt(t), slug, what)), fmt(t)))
+    if not quiet:
+        print("follow-up %s set for %s" % (short_id("%s|%s|%s" % (fmt(t), slug, what)), fmt(t)))
 
 
 def cmd_fdone(fid, result):
@@ -1812,6 +1825,17 @@ USAGE = """brain: the second brain command
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
   notify [--task SLUG] [--key KEY] MESSAGE
 
+  capture TEXT [--src S]        quick note to sort later (S: text, voice, clip, web)
+  captures [--json]             open captures with a suggested destination
+  capture-accept ID [--kind log|task|remind] [--dest SLUG]
+  capture-dismiss ID
+  query QUESTION [--json]       answer a question from the brain (read-only model run)
+  query --history [--json]      earlier questions and answers
+  status [--json]               health checks, tick and agent history, activity
+  config KEY VALUE              change one setting in ~/brain/config (validated)
+  graph [--all] [--json]        projects, tasks and decisions and how they connect
+  projects [--json]             tasks grouped by the repo their sessions ran in
+  search QUERY [--json]         find tasks, log lines, decisions and archived tasks
   serve [--port N] [--open]     local web page (127.0.0.1 only): today's tasks, with actions
 
   transcript SESSION_ID         condensed tail of a session transcript (agent use)
@@ -1903,6 +1927,112 @@ def main(argv):
         p.add_argument("--at")
         a = p.parse_args(rest)
         cmd_log(a.slug, a.text, a.session, a.at)
+        return 0
+    if cmd in ("capture", "captures", "capture-accept", "capture-dismiss"):
+        import brain_captures as C
+        core = sys.modules[__name__]
+        if cmd == "capture":
+            p.add_argument("text")
+            p.add_argument("--src", default="TEXT")
+            a = p.parse_args(rest)
+            print("captured %s" % C.add(core, a.text, a.src))
+        elif cmd == "captures":
+            p.add_argument("--json", action="store_true")
+            a = p.parse_args(rest)
+            caps = C.open_captures(core)
+            if a.json:
+                print(json.dumps(caps, indent=1, ensure_ascii=False))
+            for c in [] if a.json else caps:
+                print("%s %s %-5s %s  -> %s %s" % (c["id"], c["at"], c["src"], c["text"], c["kind"], c["dest"]))
+        elif cmd == "capture-accept":
+            p.add_argument("id")
+            p.add_argument("--kind", choices=C.KINDS)
+            p.add_argument("--dest")
+            a = p.parse_args(rest)
+            print("capture %s -> %s" % (a.id, C.accept(core, a.id, a.kind, a.dest)))
+        else:
+            p.add_argument("id")
+            a = p.parse_args(rest)
+            C.dismiss(core, a.id)
+            print("capture %s dismissed" % a.id)
+        return 0
+    if cmd == "query":
+        import brain_ask
+        p.add_argument("question", nargs="?", default="")
+        p.add_argument("--json", action="store_true")
+        p.add_argument("--history", action="store_true")
+        a = p.parse_args(rest)
+        core = sys.modules[__name__]
+        if a.history:
+            h = brain_ask.history(core)
+            print(json.dumps(h, indent=1, ensure_ascii=False) if a.json else "\n\n".join(
+                "%s  Q: %s\n%s" % (x["at"], x["question"], x["answer"]) for x in h))
+            return 0
+        try:
+            item = brain_ask.ask(core, a.question)
+        except brain_ask.AskError as e:
+            raise BrainError(str(e))
+        if a.json:
+            print(json.dumps(item, indent=1, ensure_ascii=False))
+        else:
+            print(item["answer"] + ("\n\nrefs: " + ", ".join(item["refs"]) if item["refs"] else ""))
+        return 0
+    if cmd == "status":
+        import brain_status
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        st = brain_status.status(sys.modules[__name__])
+        if a.json:
+            print(json.dumps(st, indent=1, ensure_ascii=False))
+            return 0
+        for c in st["checks"]:
+            print("%-4s %-16s %s" % (c["level"].upper(), c["label"], c["detail"]))
+        print("tick: %d today, every %d min; agent: %d runs (%d failed), model %s" % (
+            st["tick"]["today"], st["tick"]["every_minutes"], st["agent"]["runs"],
+            st["agent"]["failed"], st["agent"]["model"]))
+        return 0
+    if cmd == "config":
+        import brain_status
+        p.add_argument("key")
+        p.add_argument("value")
+        a = p.parse_args(rest)
+        brain_status.set_config(sys.modules[__name__], a.key, a.value)
+        print("%s=%s" % (a.key, a.value.strip()))
+        return 0
+    if cmd == "graph":
+        import brain_graph
+        p.add_argument("--json", action="store_true")
+        p.add_argument("--all", action="store_true", help="include done tasks")
+        a = p.parse_args(rest)
+        g = brain_graph.graph(sys.modules[__name__], a.all)
+        if a.json:
+            print(json.dumps(g, indent=1, ensure_ascii=False))
+        else:
+            print("%d nodes, %d edges" % (len(g["nodes"]), len(g["edges"])))
+            for e in g["edges"]:
+                print("%-8s %s -- %s" % (e["kind"], e["a"], e["b"]))
+        return 0
+    if cmd == "projects":
+        import brain_projects
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        ps = brain_projects.projects(sys.modules[__name__])
+        if a.json:
+            print(json.dumps(ps, indent=1, ensure_ascii=False))
+        for g in [] if a.json else ps:
+            print("%-20s %-8s %d tasks (%d active, %d waiting, %d blocked, %d done)" % (
+                g["name"], g["state"], g["total"], g["active"], g["waiting"], g["blocked"], g["done"]))
+        return 0
+    if cmd == "search":
+        import brain_search
+        p.add_argument("query")
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        hits = brain_search.search(sys.modules[__name__], a.query)
+        if a.json:
+            print(json.dumps(hits, indent=1, ensure_ascii=False))
+        for h in [] if a.json else hits:
+            print(one_line("%-8s %-24s %s  (%s)" % (h["type"], h["slug"], h["label"], h["hint"]), 200))
         return 0
     if cmd == "serve":
         p.add_argument("--port", type=int, default=7477)

@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="app.css">
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
 </head>
 <body>
 <div class="chassis">
@@ -32,42 +32,15 @@
     </header>
 
     <nav class="rail" aria-label="Main navigation">
-      <button class="key is-on" type="button" aria-current="page">
-        <span class="key-top"><span class="key-k">1</span><span class="key-dot"></span></span>
-        <span class="key-label">Today</span>
-      </button>
+      <div class="rail-keys" id="rail-keys"></div>
       <span class="spacer"></span>
-      <button class="key key-ink" type="button" id="refresh" aria-label="Refresh now">
-        <span class="key-k">↻</span>
-        <span class="key-label">refresh</span>
+      <button class="key key-ink" type="button" id="search-key" aria-label="Search, key Command K">
+        <span class="key-k">⌘K</span>
+        <span class="key-label">search</span>
       </button>
     </nav>
 
-    <main class="panel" aria-labelledby="today-heading">
-      <div class="panel-head">
-        <span class="panel-num">01</span>
-        <h1 id="today-heading">today</h1>
-        <span class="panel-sub" id="sub"></span>
-      </div>
-      <div class="today">
-        <section class="list" aria-label="Tasks">
-          <ul id="tasks" class="rows"></ul>
-          <p id="empty" class="empty" hidden><span class="empty-big">nothing open.</span><span class="empty-sub">tasks appear here when a claude session starts real work</span></p>
-        </section>
-        <section class="detail" id="detail" aria-label="Task detail" hidden>
-          <div id="detail-body"></div>
-          <div class="block">
-            <h2 class="label">updates</h2>
-            <form class="composer" id="composer">
-              <label class="sr-only" for="upd">Post an update</label>
-              <input id="upd" name="upd" autocomplete="off" maxlength="300" placeholder="post an update…">
-              <button type="submit" class="btn-key">POST</button>
-            </form>
-            <ol class="updates" id="updates"></ol>
-          </div>
-        </section>
-      </div>
-    </main>
+    <main class="panel" id="panel" aria-labelledby="view-heading"></main>
   </div>
 </div>
 </body>

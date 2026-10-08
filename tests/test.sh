@@ -6,6 +6,8 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/brain-test.XXXXXX")"
 export HOME="$WORK/home"
+# The launchd label is per user, not per HOME: never touch the owner's real job.
+export BRAIN_NO_LAUNCHD=1
 mkdir -p "$HOME/.claude" "$WORK/bin"
 unset CLAUDE_CONFIG_DIR BRAIN_HOME BRAIN_AGENT BRAIN_RUN_ID CLAUDE_CODE_SESSION_ID
 PASS=0; FAIL=0
@@ -47,6 +49,7 @@ assert any('session-end.sh' in h['command'] for g in d['hooks']['SessionEnd'] fo
 check "git repo with a commit" "git -C $HOME/brain log --oneline | grep -q install"
 check "v1 hook entries replaced, not duplicated" "! grep -q board.sh $HOME/.claude/settings.json && [ \$(grep -c 'session-end.sh' $HOME/.claude/settings.json) -eq 1 ]"
 check "installer copy kept for uninstall" "[ -x $HOME/brain/bin/install-brain.sh ]"
+check "tests never touch the real launchd job" "grep -q 'launchd: skipped (BRAIN_NO_LAUNCHD=1)' $WORK/install1.log"
 check "CLAUDE_BIN recorded" "grep -q '^CLAUDE_BIN=$WORK/bin/claude' $HOME/brain/config"
 
 echo "== owner data survives re-install"
@@ -347,6 +350,156 @@ assert any(s['session_id']=='$SID' and 'api-rate-limits' in s['tasks'] for s in 
 EOF"
 check "export to stdout" "$B export - | python3 -c 'import json,sys; json.load(sys.stdin)'"
 
+echo "== captures (inbox)"
+cj() { "$B" captures --json | python3 -c "import json,sys;d=json.load(sys.stdin);c=[x for x in d if '$1' in x['text']];print(c[0]['$2'] if c else 'MISSING')"; }
+check "installer creates captures.md" "[ -f $HOME/brain/captures.md ]"
+"$B" capture "gateway rate limits: bursts look fine on staging" >/dev/null
+"$B" capture "remind me to call the bank tomorrow" >/dev/null
+"$B" capture "buy batteries and gaffer tape" --src voice >/dev/null
+check "capture is stored as an open line" "grep -q '^- \[ \] .* | TEXT | gateway rate limits' $HOME/brain/captures.md"
+check "source is kept" "grep -q '| VOICE | buy batteries' $HOME/brain/captures.md"
+check "text matching a task is suggested as a log entry on it" "[ \"\$(cj 'gateway rate' kind)\" = log ] && [ \"\$(cj 'gateway rate' dest)\" = api-rate-limits ]"
+check "reminder phrasing is suggested as a reminder" "[ \"\$(cj 'call the bank' kind)\" = remind ]"
+check "anything else is suggested as a new task with a slug" "[ \"\$(cj 'buy batteries' kind)\" = task ] && [ \"\$(cj 'buy batteries' dest)\" = buy-batteries-gaffer ]"
+check "empty capture rejected" "! $B capture '   ' 2>/dev/null"
+"$B" capture "pipes | are | flattened" >/dev/null
+check "pipes in text cannot break the line format" "grep -q 'pipes / are / flattened' $HOME/brain/captures.md"
+bo="$("$B" board)"
+check "board lists unsorted captures" "echo \"\$bo\" | grep -q '## Captures' && echo \"\$bo\" | grep -q 'buy batteries'"
+id_log="$(cj 'gateway rate' id)"; id_rem="$(cj 'call the bank' id)"; id_task="$(cj 'buy batteries' id)"; id_pipe="$(cj 'pipes' id)"
+"$B" capture-accept "$id_log" >/dev/null
+check "accepting a log suggestion logs it on the task as you" "awk '/^### /{h=\$0} /bursts look fine on staging/{print h}' $HOME/brain/tasks/api-rate-limits.md | grep -q '| you\$'"
+check "accepted capture is closed with where it went" "grep -q '^- \[x\] .*gateway rate limits.* -> log api-rate-limits' $HOME/brain/captures.md"
+"$B" capture-accept "$id_task" >/dev/null
+check "accepting a task suggestion creates the task" "grep -q '^title: buy batteries and gaffer tape' $HOME/brain/tasks/buy-batteries-gaffer.md && grep -q 'Task created from capture' $HOME/brain/tasks/buy-batteries-gaffer.md"
+"$B" capture-accept "$id_rem" >/dev/null
+check "accepting a reminder adds an owner reminder" "grep -q '^- \[ \] .* | [Rr]emind.*call the bank tomorrow' $HOME/brain/followups.md"
+"$B" capture "second batteries note" >/dev/null
+id_ovr="$(cj 'second batteries' id)"
+"$B" capture-accept "$id_ovr" --kind log --dest buy-batteries-gaffer >/dev/null
+check "kind and destination can be overridden" "grep -q 'second batteries note' $HOME/brain/tasks/buy-batteries-gaffer.md"
+check "accepting into a missing task fails" "\"$B\" capture 'orphan note' >/dev/null; ! $B capture-accept \$(cj 'orphan note' id) --kind log --dest no-such-task 2>/dev/null"
+"$B" capture-dismiss "$id_pipe" >/dev/null
+check "dismissed capture is closed and leaves the open list" "grep -q '^- \[x\] .*pipes / are / flattened -> dismissed' $HOME/brain/captures.md && [ \"\$(cj 'pipes' id)\" = MISSING ]"
+check "a closed capture cannot be accepted again" "! $B capture-accept $id_log 2>/dev/null"
+"$B" capture-dismiss "$(cj 'orphan note' id)" >/dev/null
+"$B" capture "twin text" >/dev/null; "$B" capture "twin text" >/dev/null
+twins="$("$B" captures --json | python3 -c "import json,sys;print(' '.join(c['id'] for c in json.load(sys.stdin) if c['text']=='twin text'))")"
+check "identical captures in the same minute get different ids" "[ \$(echo $twins | wc -w) -eq 2 ] && [ \$(echo $twins | tr ' ' '\\n' | sort -u | wc -l) -eq 2 ]"
+for t in $twins; do "$B" capture-dismiss "$t" >/dev/null; done
+twin_ids() { "$B" captures --json | python3 -c "import json,sys;print(' '.join(c['id'] for c in json.load(sys.stdin) if c['text']=='twin text'))"; }
+check "both twins can be closed" "[ -z \"\$(twin_ids)\" ]"
+capid() { "$B" captures --json | python3 -c "import json,sys;print([c['id'] for c in json.load(sys.stdin) if sys.argv[1] in c['text']][0])" "$1"; }
+wq() { "$B" captures --json | python3 -c "
+import json,sys,datetime as d
+c=[x for x in json.load(sys.stdin) if sys.argv[1] in x['text']][0]
+w=d.datetime.strptime(c['when'],'%Y-%m-%d %H:%M')
+print(w.strftime('%a %H:%M'), (w.date()-d.date.today()).days)" "$1"; }
+"$B" capture "remind me to rotate the key on Friday" >/dev/null
+"$B" capture "remind me to call mum tomorrow at 4pm" >/dev/null
+"$B" capture "remind me to stretch at 23:59" >/dev/null
+"$B" capture "remind me about the plants" >/dev/null
+fri="$(wq 'rotate the key')"
+tom="$(python3 -c 'import datetime as d;print((d.date.today()+d.timedelta(1)).strftime("%a"))') 16:00 1"
+next_fri="$(python3 -c 'import datetime as d;t=d.date.today();n=(4-t.weekday())%7 or 7;print((t+d.timedelta(n)).isoformat())')"
+check "weekday in the text sets the reminder day, 09:00 ($fri)" "echo '$fri' | grep -q '^Fri 09:00 [1-7]$'"
+check "tomorrow at 4pm" "[ \"\$(wq 'call mum')\" = '$tom' ]"
+check "a time alone means today if still ahead" "wq stretch | grep -q ' 23:59 [01]$'"
+check "no time in the text means next workday 09:00" "wq 'the plants' | grep -q ' 09:00 '"
+"$B" capture-accept "$(capid 'rotate the key')" --kind remind >/dev/null
+check "accepting uses the time from the text" "grep -q '^- \[ \] $next_fri 09:00 | .*rotate the key' $HOME/brain/followups.md"
+for t in 'call mum' stretch 'the plants'; do "$B" capture-dismiss "$(capid "$t")" >/dev/null; done
+"$B" capture "remind me to water the plants" >/dev/null
+"$B" capture-accept "$(cj 'water the plants' id)" >/dev/null
+check "a reminder with no task is kept as an unattached reminder" "grep -q '| inbox | .*water the plants' $HOME/brain/followups.md"
+rm -f "$HOME/brain/tasks/buy-batteries-gaffer.md"
+
+echo "== search"
+sj() { "$B" search "$1" --json | python3 -c "import json,sys;r=json.load(sys.stdin);print(' '.join('%s:%s' % (x['type'], x['slug']) for x in r))"; }
+check "finds a task by its title" "sj 'rate limits' | grep -q 'task:api-rate-limits'"
+check "finds a log entry by its text" "sj 'gateway already buffers' | grep -q 'log:api-rate-limits'"
+check "finds a decision" "sj 'token bucket' | grep -q 'decision:api-rate-limits'"
+check "all words must match, in any order" "sj 'bursts gateway' | grep -q 'log:api-rate-limits' && [ -z \"\$(sj 'gateway zebra')\" ]"
+check "case-insensitive" "sj 'RATE LIMITS' | grep -q 'task:api-rate-limits'"
+check "title match ranks above log matches" "sj 'rate limits' | awk '{print \$1}' | grep -q '^task:api-rate-limits'"
+check "finds archived tasks" "sj 'stall target' | grep -q 'archived:stall-target-task'"
+check "empty query returns nothing" "[ -z \"\$(sj '  ')\" ]"
+check "results are capped" "[ \$(\"$B\" search a --json | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))') -le 30 ]"
+check "plain output for people" "$B search 'rate limits' | grep -q 'api-rate-limits'"
+
+echo "== projects"
+P1=22222222-aaaa-bbbb-cccc-000000000001; P2=22222222-aaaa-bbbb-cccc-000000000002
+NOWTS="$(date '+%Y-%m-%d %H:%M')"
+printf '%s | start | %s | /code/alpha | \n%s | start | %s | /code/beta | \n%s | end | %s | /code/beta/src | \n' "$NOWTS" "$P1" "$NOWTS" "$P2" "$NOWTS" "$P2" >> "$HOME/brain/sessions.log"
+"$B" new alpha-one "Alpha one" --session "$P1" >/dev/null
+"$B" new alpha-two "Alpha two" --session "$P1" >/dev/null
+"$B" new beta-one "Beta one" --session "$P2" >/dev/null
+"$B" new loose-task "No session" >/dev/null
+"$B" set alpha-two status blocked >/dev/null
+"$B" set beta-one status done >/dev/null
+pj() { "$B" projects --json | python3 -c "import json,sys;d={p['name']:p for p in json.load(sys.stdin)};p=d.get('$1');print(p['$2'] if p else 'MISSING')"; }
+check "tasks are grouped by the folder their sessions ran in" "[ \"\$(pj alpha total)\" = 2 ]"
+check "a session's start folder names the project, not a subfolder" "[ \"\$(pj beta total)\" = 1 ]"
+check "tasks without sessions are grouped as unfiled" "[ \"\$(pj unfiled total)\" -ge 1 ]"
+check "project state is its most urgent open task" "[ \"\$(pj alpha state)\" = blocked ]"
+check "a project with nothing open is quiet" "[ \"\$(pj beta state)\" = quiet ] && [ \"\$(pj beta done)\" = 1 ]"
+check "counts by status" "[ \"\$(pj alpha blocked)\" = 1 ] && [ \"\$(pj alpha active)\" = 1 ]"
+check "plain output for people" "$B projects | grep -q '^alpha'"
+for t in alpha-one alpha-two beta-one loose-task; do rm -f "$HOME/brain/tasks/$t.md"; done
+
+echo "== system status"
+sx() { "$B" status --json | python3 -c "import json,sys;d=json.load(sys.stdin);exec(sys.argv[1])" "$1"; }
+check "status reports the last tick" "sx \"assert d['tick']['last'] and d['tick']['last_result'], d['tick']\""
+check "status counts agent runs and failures from the tick log" "sx \"assert d['agent']['runs'] >= 1 and d['agent']['failed'] >= 0 and d['agent']['model']=='haiku', d['agent']\""
+check "status lists health checks with ok/warn/bad" "sx \"c={x['id']:x for x in d['checks']}; assert {'hooks','tick','claude','git'} <= set(c), c; assert all(x['level'] in ('ok','warn','bad') for x in c.values())\""
+check "hooks check sees the installed hooks" "sx \"c={x['id']:x for x in d['checks']}; assert c['hooks']['level']=='ok', c['hooks']\""
+check "status counts the store" "sx \"s=d['store']; assert s['tasks'] >= 1 and s['decisions'] >= 1 and 'captures' in s and s['archived'] >= 1, s\""
+check "status shows hourly activity for the last 24h" "sx \"a=d['activity']; assert len(a['sessions'])==24 and len(a['log'])==24, a\""
+check "status shows config values" "sx \"assert d['config']['AGENT_MODEL']=='haiku'\""
+check "plain status for people" "$B status | grep -qi 'tick'"
+"$B" config NOTIFY off >/dev/null
+check "config can switch a known on/off key" "grep -q '^NOTIFY=off' $HOME/brain/config"
+check "config refuses unknown keys" "! $B config NOPE 1 2>/dev/null"
+check "config refuses bad values" "! $B config NOTIFY maybe 2>/dev/null && ! $B config TICK_MINUTES abc 2>/dev/null"
+"$B" config NOTIFY on >/dev/null
+
+echo "== ask (questions over the brain)"
+cat > "$WORK/bin/claude-ask" <<EOF
+#!/bin/bash
+{ echo "ARGS: \$*"; echo "PWD: \$PWD"; echo "ENV BRAIN_AGENT=\${BRAIN_AGENT:-}"; cat; echo; echo "----"; } >> "$WORK/ask-calls.log"
+[ -f "$WORK/ask-fail" ] && { echo "boom" >&2; exit 3; }
+printf 'The rate limit work is active; the token bucket was chosen.\nREFS: api-rate-limits, no-such-task\n'
+EOF
+chmod +x "$WORK/bin/claude-ask"
+"$B" config CLAUDE_BIN "$WORK/bin/claude-ask" >/dev/null
+out="$("$B" query 'where are we on rate limits?' --json)"
+check "query returns the model's answer" "echo \"\$out\" | python3 -c \"import json,sys;d=json.load(sys.stdin);assert d['answer'].startswith('The rate limit work is active'), d\""
+check "refs keep only real tasks" "echo \"\$out\" | python3 -c \"import json,sys;d=json.load(sys.stdin);assert d['refs']==['api-rate-limits'], d\""
+check "the answer has no REFS line" "! echo \"\$out\" | grep -q 'REFS:'"
+check "query runs read-only, as an agent run, in ~/brain" "grep -q -- '--permission-mode dontAsk' $WORK/ask-calls.log && grep -q 'ENV BRAIN_AGENT=1' $WORK/ask-calls.log && grep -q 'PWD: .*/home/brain\$' $WORK/ask-calls.log && ! grep -q 'Bash(gh' $WORK/ask-calls.log && ! grep -q 'Write\|Edit' <(grep '^ARGS' $WORK/ask-calls.log)"
+check "the question and the board go in the prompt" "grep -q 'where are we on rate limits?' $WORK/ask-calls.log && grep -q 'Brain board' $WORK/ask-calls.log"
+check "questions and answers are kept as history" "$B query --history --json | python3 -c \"import json,sys;h=json.load(sys.stdin);assert h[-1]['question']=='where are we on rate limits?' and h[-1]['refs']==['api-rate-limits'], h\""
+check "empty question rejected" "! $B query '  ' 2>/dev/null"
+check "overlong question rejected" "! $B query \"\$(python3 -c 'print(\"x\"*600)')\" 2>/dev/null"
+touch "$WORK/ask-fail"
+check "a failing model call is an error, not a crash" "! $B query 'anything' 2>$WORK/ask.err && grep -q 'claude' $WORK/ask.err && ! grep -q Traceback $WORK/ask.err"
+rm -f "$WORK/ask-fail"
+
+echo "== graph"
+G1=33333333-aaaa-bbbb-cccc-000000000001
+printf '%s | start | %s | /code/gamma | \n' "$(date '+%Y-%m-%d %H:%M')" "$G1" >> "$HOME/brain/sessions.log"
+"$B" new gamma-one "Gamma one" --session "$G1" >/dev/null
+"$B" new gamma-two "Gamma two" --session "$G1" >/dev/null
+"$B" decide gamma-one "Use a queue" --decision "SQS" --why "retries" >/dev/null
+gq() { "$B" graph --json | python3 -c "import json,sys;g=json.load(sys.stdin);exec(sys.argv[1])" "$1"; }
+check "graph has project, task and decision nodes" "gq \"k={n['id']:n['kind'] for n in g['nodes']}; assert k.get('project:gamma')=='project' and k.get('task:gamma-one')=='task' and any(v=='decision' for v in k.values()), k\""
+check "tasks link to their project" "gq \"e={(x['a'],x['b'],x['kind']) for x in g['edges']}; assert ('task:gamma-one','project:gamma','project') in e, e\""
+check "tasks that shared a session are linked" "gq \"e={(x['a'],x['b'],x['kind']) for x in g['edges']}; assert ('task:gamma-one','task:gamma-two','session') in e or ('task:gamma-two','task:gamma-one','session') in e, e\""
+check "decisions link to their task" "gq \"assert any(x['kind']=='decision' and x['b']=='task:gamma-one' for x in g['edges'])\""
+check "every edge points at existing nodes" "gq \"ids={n['id'] for n in g['nodes']}; assert all(x['a'] in ids and x['b'] in ids for x in g['edges'])\""
+check "done tasks are left out unless asked" "\"$B\" set gamma-two status done >/dev/null; gq \"assert 'task:gamma-two' not in {n['id'] for n in g['nodes']}\" && \"$B\" graph --all --json | grep -q 'task:gamma-two'"
+for t in gamma-one gamma-two; do rm -f "$HOME/brain/tasks/$t.md"; done
+
 echo "== web: brain serve"
 "$B" new web-task-one "Web task one" --goal "Show it on the page" --next "Check the page" >/dev/null
 "$B" followup +1h web-task-one "Check the web page" >/dev/null
@@ -358,7 +511,7 @@ check "serve prints a 127.0.0.1 URL" "echo \"$URL\" | grep -q '^http://127.0.0.1
 page="$(curl -s "$URL")"
 TOKEN="$(echo "$page" | sed -n 's/.*name="brain-token" content="\([0-9a-f]*\)".*/\1/p' | head -1)"
 check "page served with a per-run token" "[ \${#TOKEN} -ge 32 ]"
-check "page assets served" "curl -sf ${URL}app.js >/dev/null && curl -sf ${URL}app.css >/dev/null"
+check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
 check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
 api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"
@@ -384,6 +537,48 @@ fid="$(api ${URL}api/state >/dev/null; python3 -c "import json;print([x for x in
 check "follow-up ticked from the page" "[ \"\$(api -X POST -d '{\"result\":\"looked fine\"}' ${URL}api/followups/$fid/done)\" = 200 ] && grep -q '\[x\] .*Check the web page' $HOME/brain/followups.md && grep -q 'looked fine' $wf"
 check "oversized body rejected" "[ \"\$(api -X POST --data-binary @<(python3 -c 'print(\"{\\\"text\\\":\\\"\" + \"x\"*70000 + \"\\\"}\")') ${URL}api/tasks/web-task-one/log)\" = 413 ]"
 check "server listens on 127.0.0.1 only" "! curl -s -m 2 http://\$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print \$1}'):$PORT/ >/dev/null 2>&1"
+check "capture from the page" "[ \"\$(api -X POST -d '{\"text\":\"web capture about the web page\"}' ${URL}api/captures)\" = 200 ] && grep -q '| WEB | web capture about the web page' $HOME/brain/captures.md"
+cid="$(python3 -c "import json;d=json.load(open('$WORK/api.out'));print([c for c in d['state']['captures'] if 'web capture' in c['text']][0]['id'])")"
+check "state carries captures with a suggestion" "python3 -c \"
+import json;d=json.load(open('$WORK/api.out'))['state']
+c=[c for c in d['captures'] if 'web capture' in c['text']][0]
+assert c['kind']=='log' and c['dest']=='web-task-one', c
+assert isinstance(d['notes'], list)
+assert isinstance(d['reminders'], list) and any('water the plants' in r['what'] for r in d['reminders']), d['reminders']
+\""
+check "accept from the page" "[ \"\$(api -X POST -d '{}' ${URL}api/captures/$cid/accept)\" = 200 ] && grep -q 'web capture about the web page' $wf"
+"$B" capture "web dismiss me" >/dev/null
+did="$("$B" captures --json | python3 -c "import json,sys;print([c for c in json.load(sys.stdin) if 'dismiss me' in c['text']][0]['id'])")"
+check "dismiss from the page" "[ \"\$(api -X POST -d '{}' ${URL}api/captures/$did/dismiss)\" = 200 ] && grep -q 'web dismiss me -> dismissed' $HOME/brain/captures.md"
+check "bad capture kind rejected" "\"$B\" capture 'kind test' >/dev/null; k=\$(\"$B\" captures --json | python3 -c \"import json,sys;print([c for c in json.load(sys.stdin) if 'kind test' in c['text']][0]['id'])\"); [ \"\$(api -X POST -d '{\\\"kind\\\":\\\"nope\\\"}' ${URL}api/captures/\$k/accept)\" = 400 ]"
+"$B" notify --key webnote "A note from the brain" >/dev/null
+nid="$(api ${URL}api/state >/dev/null; python3 -c "import json;print([n for n in json.load(open('$WORK/api.out'))['notes'] if 'note from the brain' in n['text']][0]['id'])")"
+check "brain notes can be cleared from the page" "[ \"\$(api -X POST -d '{}' ${URL}api/notes/$nid/dismiss)\" = 200 ] && ! grep -q 'A note from the brain' $HOME/brain/inbox.md"
+check "search from the page" "[ \"\$(api ${URL}'api/search?q=web%20task')\" = 200 ] && python3 -c \"
+import json;r=json.load(open('$WORK/api.out'))['results']
+assert r and r[0]['type']=='task' and r[0]['slug']=='web-task-one', r
+\""
+check "search needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}'api/search?q=web')\" = 403 ]"
+check "state carries projects" "api ${URL}api/state >/dev/null; python3 -c \"
+import json;d=json.load(open('$WORK/api.out'))
+assert isinstance(d['projects'], list) and all('name' in p and 'state' in p for p in d['projects']), d['projects']
+\""
+check "system status from the page" "[ \"\$(api ${URL}api/status)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); assert d['checks'] and d['tick'], d
+\""
+check "config switch from the page" "[ \"\$(api -X POST -d '{\"key\":\"NOTIFY\",\"value\":\"off\"}' ${URL}api/config)\" = 200 ] && grep -q '^NOTIFY=off' $HOME/brain/config"
+check "page cannot set arbitrary config" "[ \"\$(api -X POST -d '{\"key\":\"CLAUDE_BIN\",\"value\":\"/tmp/evil\"}' ${URL}api/config)\" = 400 ] && ! grep -q '/tmp/evil' $HOME/brain/config"
+api -X POST -d '{"key":"NOTIFY","value":"on"}' ${URL}api/config >/dev/null
+check "ask from the page" "[ \"\$(api -X POST -d '{\"question\":\"what is open?\"}' ${URL}api/ask)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); assert d['answer'] and d['refs']==['api-rate-limits'], d
+\""
+check "ask history from the page" "[ \"\$(api ${URL}api/ask)\" = 200 ] && python3 -c \"
+import json;h=json.load(open('$WORK/api.out'))['history']; assert h[-1]['question']=='what is open?', h
+\""
+check "empty question from the page rejected" "[ \"\$(api -X POST -d '{\"question\":\" \"}' ${URL}api/ask)\" = 400 ]"
+check "graph from the page" "[ \"\$(api ${URL}api/graph)\" = 200 ] && python3 -c \"
+import json;g=json.load(open('$WORK/api.out')); assert g['nodes'] and isinstance(g['edges'], list), g
+\""
 kill $srv 2>/dev/null; wait $srv 2>/dev/null
 rm -f "$wf"
 

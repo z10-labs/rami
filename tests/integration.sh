@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="${1:-$(mktemp -d "${TMPDIR:-/tmp}/brain-int.XXXXXX")}"
 REAL_HOME="$HOME"
 export HOME="$WORK/home"
+# The launchd label is per user, not per HOME: never touch the owner's real job.
+export BRAIN_NO_LAUNCHD=1
 mkdir -p "$HOME/.claude" "$WORK/proj"
 # macOS: claude's login lives in the Keychain, which is found through HOME.
 if [ "$(uname -s)" = Darwin ] && [ ! -e "$HOME/Library/Keychains" ]; then

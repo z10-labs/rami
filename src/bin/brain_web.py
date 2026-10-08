@@ -14,28 +14,39 @@ import secrets
 import sys
 import webbrowser
 
+import brain_ask
+import brain_captures
+import brain_graph
+import brain_projects
+import brain_search
+import brain_status
+
 try:
     from http.server import ThreadingHTTPServer as HTTPServer
 except ImportError:  # python < 3.7
     from http.server import HTTPServer
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-ASSETS = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/index.html": ("index.html", "text/html; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-    "/app.css": ("app.css", "text/css; charset=utf-8"),
-}
+PAGES = ("/", "/index.html")
+ASSET_RE = re.compile(r"^/([a-z][a-z0-9-]*)\.(js|css)$")
+CTYPES = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
+          "html": "text/html; charset=utf-8"}
 TOKEN_PLACEHOLDER = "__BRAIN_TOKEN__"
 MAX_BODY = 64 * 1024
 SOURCE = "you"
 FOLLOWUP_ID_RE = re.compile(r"^[0-9a-f]{4,6}$")
+NOTE_RE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*$")
 ROUTES = [
     (re.compile(r"^/api/tasks/([^/]+)/status$"), "status"),
     (re.compile(r"^/api/tasks/([^/]+)/log$"), "log"),
     (re.compile(r"^/api/followups/([^/]+)/done$"), "fdone"),
+    (re.compile(r"^/api/captures()$"), "capture"),
+    (re.compile(r"^/api/captures/([^/]+)/accept$"), "accept"),
+    (re.compile(r"^/api/captures/([^/]+)/dismiss$"), "dismiss"),
+    (re.compile(r"^/api/notes/([^/]+)/dismiss$"), "note"),
+    (re.compile(r"^/api/config()$"), "config"),
 ]
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
@@ -60,7 +71,7 @@ def session_info(core, sid, sessions):
 
 def task_info(core, x, fus, sessions):
     sess = [session_info(core, sid, sessions) for sid in x.get_list("sessions")]
-    folders = [s["folder"] for s in sess if s["folder"]]
+    project = brain_projects.task_project(x, sessions)
     return {
         "slug": x.slug,
         "title": x.get("title"),
@@ -71,7 +82,7 @@ def task_info(core, x, fus, sessions):
         "direction": x.text_of("Direction"),
         "next": x.text_of("Next"),
         "tickets": x.get_list("ticket"),
-        "project": folders[-1] if folders else "",
+        "project": "" if project == brain_projects.UNFILED else project,
         "sessions": sess,
         "log": [{"at": core.fmt(w) if w else "", "source": src, "text": txt}
                 for w, src, txt in x.log_entries()],
@@ -89,7 +100,19 @@ def state(core):
         if x.get("status") == "done" and core.task_updated(x).date() != t.date():
             continue
         out.append(task_info(core, x, fus, sessions))
-    return {"now": core.fmt(t), "tasks": out}
+    loose = [f.as_dict() for f in fus if not f.done and not os.path.isfile(core.task_path(f.slug))]
+    return {"now": core.fmt(t), "model": core.load_config().get("AGENT_MODEL") or "haiku", "tasks": out, "captures": brain_captures.open_captures(core),
+            "notes": notes(core), "reminders": loose, "projects": brain_projects.projects(core)}
+
+
+def notes(core):
+    """The brain's messages to the owner (inbox.md), newest last."""
+    out = []
+    for line in core.inbox_items():
+        m = NOTE_RE.match(line)
+        at, task, text = m.groups() if m else ("", "", line.lstrip("- "))
+        out.append({"id": core.short_id(line), "at": at, "task": task, "text": text})
+    return out
 
 
 # ---------------------------------------------------------------- actions
@@ -120,6 +143,33 @@ def act(core, kind, ident, body):
             raise HttpError(400, "result must be text")
         with core.write_lock():
             core.tick_followup(ident, core.one_line(result, 200), source=SOURCE)
+    elif kind == "capture":
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HttpError(400, "write something to capture")
+        brain_captures.add(core, text, "WEB")
+    elif kind in ("accept", "dismiss"):
+        if not FOLLOWUP_ID_RE.match(ident):
+            raise HttpError(404, "no capture %r" % ident)
+        if kind == "dismiss":
+            brain_captures.dismiss(core, ident)
+            return
+        ckind, dest = body.get("kind"), body.get("dest")
+        if ckind is not None and ckind not in brain_captures.KINDS:
+            raise HttpError(400, "kind must be one of %s" % ", ".join(brain_captures.KINDS))
+        if dest is not None and (not isinstance(dest, str) or (dest and not core.slug_ok(dest))):
+            raise HttpError(400, "dest must be a task slug")
+        brain_captures.accept(core, ident, ckind, dest or None)
+    elif kind == "config":
+        key, value = body.get("key"), body.get("value")
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise HttpError(400, "send key and value")
+        brain_status.set_config(core, key, value, page=True)
+    elif kind == "note":
+        lines = [l for l in core.inbox_items() if core.short_id(l) == ident]
+        if not lines:
+            raise HttpError(404, "no note %r" % ident)
+        core.clear_inbox(lines)
 
 
 # ---------------------------------------------------------------- http
@@ -195,16 +245,30 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.check_host()
             path = urlsplit(self.path).path
-            if path in ASSETS:
-                name, ctype = ASSETS[path]
+            m = ASSET_RE.match(path)
+            if path in PAGES or (m and os.path.isfile(os.path.join(WEB_DIR, path[1:]))):
+                name = "index.html" if path in PAGES else path[1:]
                 with open(os.path.join(WEB_DIR, name), "rb") as f:
                     data = f.read()
                 if name == "index.html":
                     data = data.replace(TOKEN_PLACEHOLDER.encode(), self.server.token.encode())
-                return self.send(200, data, ctype)
+                return self.send(200, data, CTYPES[name.rsplit(".", 1)[1]])
             if path == "/api/state":
                 self.check_token()
                 return self.send_json(200, state(self.server.core))
+            if path == "/api/ask":
+                self.check_token()
+                return self.send_json(200, {"history": brain_ask.history(self.server.core)})
+            if path == "/api/graph":
+                self.check_token()
+                return self.send_json(200, brain_graph.graph(self.server.core))
+            if path == "/api/status":
+                self.check_token()
+                return self.send_json(200, brain_status.status(self.server.core))
+            if path == "/api/search":
+                self.check_token()
+                q = parse_qs(urlsplit(self.path).query).get("q", [""])[0][:200]
+                return self.send_json(200, {"results": brain_search.search(self.server.core, q)})
             raise HttpError(404, "not found")
         except Exception as e:  # every error becomes a JSON reply
             self.fail(e)
@@ -215,6 +279,15 @@ class Handler(BaseHTTPRequestHandler):
             self.check_origin()
             self.check_token()
             path = urlsplit(self.path).path
+            if path == "/api/ask":
+                body = self.read_json()
+                q = body.get("question")
+                if not isinstance(q, str) or not q.strip():
+                    raise HttpError(400, "ask a question")
+                try:
+                    return self.send_json(200, brain_ask.ask(self.server.core, q))
+                except brain_ask.AskError as e:
+                    raise HttpError(429, str(e))
             for rx, kind in ROUTES:
                 m = rx.match(path)
                 if m:

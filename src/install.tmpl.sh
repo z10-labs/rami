@@ -36,7 +36,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   if [ -d "$SKILL_DIR" ]; then
     rm -r "$SKILL_DIR" && say "skill: removed $SKILL_DIR"
   fi
-  if [ "$OS" = "Darwin" ] && [ -f "$PLIST" ]; then
+  if [ "$OS" = "Darwin" ] && [ -f "$PLIST" ] && [ "${BRAIN_NO_LAUNCHD:-}" != 1 ]; then
     launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null \
       || launchctl unload "$PLIST" 2>/dev/null || true
     rm -f "$PLIST" && say "launchd: removed $PLIST"
@@ -69,9 +69,23 @@ mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 
 @@PUT bin/brain.py 755@@
 @@PUT bin/brain_web.py 644@@
+@@PUT bin/brain_captures.py 644@@
+@@PUT bin/brain_search.py 644@@
+@@PUT bin/brain_projects.py 644@@
+@@PUT bin/brain_status.py 644@@
+@@PUT bin/brain_ask.py 644@@
+@@PUT bin/brain_graph.py 644@@
 @@PUT bin/web/index.html 644@@
 @@PUT bin/web/app.css 644@@
 @@PUT bin/web/app.js 644@@
+@@PUT bin/web/core.js 644@@
+@@PUT bin/web/today.js 644@@
+@@PUT bin/web/inbox.js 644@@
+@@PUT bin/web/palette.js 644@@
+@@PUT bin/web/ask.js 644@@
+@@PUT bin/web/projects.js 644@@
+@@PUT bin/web/system.js 644@@
+@@PUT bin/web/graph.js 644@@
 @@PUT bin/brain 755@@
 @@PUT bin/session-start.sh 755@@
 @@PUT bin/session-end.sh 755@@
@@ -97,6 +111,10 @@ keep_file "$BRAIN/followups.md" <<'__BRAIN_EOF__'
 __BRAIN_EOF__
 keep_file "$BRAIN/inbox.md" <<'__BRAIN_EOF__'
 # Inbox
+
+__BRAIN_EOF__
+keep_file "$BRAIN/captures.md" <<'__BRAIN_EOF__'
+# Captures
 
 __BRAIN_EOF__
 [ -e "$BRAIN/sessions.log" ] || { : > "$BRAIN/sessions.log"; say "created $BRAIN/sessions.log"; }
@@ -143,7 +161,11 @@ fi
 # ---------------------------------------------------------------- launchd
 TICK_MINUTES="$(sed -n 's/^TICK_MINUTES=\([0-9][0-9]*\).*/\1/p' "$BRAIN/config" | tail -n 1)"
 TICK_MINUTES="${TICK_MINUTES:-15}"
-if [ "$OS" = "Darwin" ]; then
+if [ "${BRAIN_NO_LAUNCHD:-}" = 1 ]; then
+  # Tests: the job label is per user, not per HOME, so touching launchd here
+  # would replace the owner's real job.
+  say "launchd: skipped (BRAIN_NO_LAUNCHD=1)"
+elif [ "$OS" = "Darwin" ]; then
   mkdir -p "$HOME/Library/LaunchAgents"
   # launchd starts jobs with a minimal PATH: record the installer's PATH.
   "$PY" - "$PLIST.gen.$$" "$LABEL" "$BRAIN" "$TICK_MINUTES" <<'__BRAIN_EOF__'

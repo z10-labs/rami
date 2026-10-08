@@ -38,12 +38,18 @@ From a terminal:
 
 ```
 ~/brain/bin/brain board            # open tasks, follow-ups, inbox
-~/brain/bin/brain serve --open     # today's tasks in the browser (127.0.0.1:7477, Ctrl-C to stop)
+~/brain/bin/brain serve --open     # the brain page in your browser (127.0.0.1:7477, Ctrl-C to stop)
+~/brain/bin/brain capture "text"   # quick note; sorted later in the Inbox
+~/brain/bin/brain search "words"   # tasks, log lines, decisions, archive
+~/brain/bin/brain query "question" # answered from the brain by claude, read-only
+~/brain/bin/brain projects         # tasks grouped by repo
+~/brain/bin/brain status           # health: background job, last tick, agent, hooks, git
+~/brain/bin/brain config NOTIFY off   # change one setting (validated)
 ~/brain/bin/brain show SLUG
 ~/brain/bin/brain tick --dry-run   # what the next tick would do, without doing it
 ~/brain/bin/brain tick             # run a tick now
 ~/brain/bin/brain export out.json  # everything as one JSON file
-~/brain/bin/brain lint             # check task files against the size rules
+~/brain/bin/brain lint             # check task files against the format rules
 ~/brain/bin/brain help
 ```
 
@@ -115,11 +121,25 @@ Nothing secret belongs here: no tokens, credentials or customer data.
 ## Web page
 
 `~/brain/bin/brain serve --open` starts a small server on this machine only
-(127.0.0.1:7477) and opens the Today page: open tasks and tasks finished
-today, each with its Goal, Direction, Next, follow-ups, links and the full
-log. From the page you can change a task's status, post an update and tick a
-follow-up; those entries are logged as "you". The page refreshes every 10
-seconds, so work recorded by Claude sessions and the agent shows up on its
-own. It keeps running until you press Ctrl-C in its terminal. Each run uses
-a new secret key embedded in the page, so other websites cannot read or
-change your brain through it.
+(127.0.0.1:7477) and opens the brain page. It keeps running until you press
+Ctrl-C in its terminal, and refreshes every 10 seconds, so work recorded by
+Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
+Cmd-K (or /) searches.
+
+- **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
+  task's log, a new task, or a reminder) and you can change that before
+  accepting. Reminders with no task and the brain's own messages are here too.
+- **Today (2):** open tasks and tasks finished today: Goal, Direction, Next,
+  follow-ups, links and the full log. Change status, post an update, tick a
+  follow-up. Your entries are logged as "you".
+- **Ask (3):** questions answered from your brain by claude (the agent's
+  model), read-only, in about 15 seconds. Answers link to the tasks they used.
+- **Graph (4):** projects, open tasks and decisions, linked by repo, by
+  sessions that worked on two tasks, and by decisions.
+- **Projects (5):** tasks grouped by the repo their sessions ran in, in
+  columns by state; a card opens Today filtered to that project.
+- **System (6):** health checks (background job, last tick, agent, hooks,
+  git), the notifications switch and agent model, and 24 hours of activity.
+
+Each run uses a new secret key embedded in the page, so other websites
+cannot read or change your brain through it.

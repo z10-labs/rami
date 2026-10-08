@@ -36,7 +36,7 @@ if [ "${1:-}" = "--uninstall" ]; then
   if [ -d "$SKILL_DIR" ]; then
     rm -r "$SKILL_DIR" && say "skill: removed $SKILL_DIR"
   fi
-  if [ "$OS" = "Darwin" ] && [ -f "$PLIST" ]; then
+  if [ "$OS" = "Darwin" ] && [ -f "$PLIST" ] && [ "${BRAIN_NO_LAUNCHD:-}" != 1 ]; then
     launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null \
       || launchctl unload "$PLIST" 2>/dev/null || true
     rm -f "$PLIST" && say "launchd: removed $PLIST"
@@ -103,6 +103,7 @@ LOG_LINE_MAX = 300
 BOARD_TASKS = 25
 BOARD_FOLLOWUPS = 10
 BOARD_INBOX = 8
+BOARD_CAPTURES = 5
 LINE_MAX = 160
 TRANSCRIPT_TAIL_LINES = 200
 STATUSES = ("active", "waiting", "blocked", "done")
@@ -951,6 +952,16 @@ def board_text(session_id="", mark_read=False):
         out.append(one_line("- %s%s %s | %s | %s" % (mark, f.id, fmt(f.due), f.slug, f.what)))
     if len(open_fus) > BOARD_FOLLOWUPS:
         out.append("- … %d more in ~/brain/followups.md" % (len(open_fus) - BOARD_FOLLOWUPS))
+    import brain_captures
+    caps = [c for c in brain_captures.load(sys.modules[__name__])[1] if not c.done]
+    if caps:
+        out.append("")
+        out.append("## Captures (owner's unsorted notes; if one belongs to this work, "
+                   "log it there and run `~/brain/bin/brain capture-accept ID --kind log --dest SLUG`)")
+        for c in caps[-BOARD_CAPTURES:]:
+            out.append(one_line("- %s %s | %s" % (c.id, c.at, c.text)))
+        if len(caps) > BOARD_CAPTURES:
+            out.append("- … %d more in ~/brain/captures.md" % (len(caps) - BOARD_CAPTURES))
     inbox = inbox_items()
     if inbox:
         out.append("")
@@ -1557,7 +1568,7 @@ def limit_lines(text, n):
     return "\n".join(lines[:n])
 
 
-def cmd_new(a):
+def cmd_new(a, quiet=False, note="Task created", source=None):
     slug = a.slug
     if not slug_ok(slug):
         raise BrainError("slug must be kebab-case, 2 to 4 words: %r" % slug)
@@ -1574,9 +1585,10 @@ def cmd_new(a):
     with write_lock():
         write_atomic(task_path(slug), text)
         x = load_task(slug)
-        add_log(x, "Task created", t, session=a.session)
+        add_log(x, note, t, session=a.session, source=source)
         x.save()
-    print("created task %s" % slug)
+    if not quiet:
+        print("created task %s" % slug)
 
 
 def cmd_link(slug, sid):
@@ -1711,7 +1723,7 @@ def cmd_decide(a):
     print("decision logged for %s" % a.slug)
 
 
-def cmd_followup(when, slug, what, remind=False):
+def cmd_followup(when, slug, what, remind=False, quiet=False):
     cfg = load_config()
     t = parse_when(cfg, when)
     what = one_line(what, 160).replace("|", "/")
@@ -1722,7 +1734,8 @@ def cmd_followup(when, slug, what, remind=False):
         if not os.path.isfile(FOLLOWUPS):
             write_atomic(FOLLOWUPS, "# Follow-ups\n\n")
         append_line(FOLLOWUPS, line)
-    print("follow-up %s set for %s" % (short_id("%s|%s|%s" % (fmt(t), slug, what)), fmt(t)))
+    if not quiet:
+        print("follow-up %s set for %s" % (short_id("%s|%s|%s" % (fmt(t), slug, what)), fmt(t)))
 
 
 def cmd_fdone(fid, result):
@@ -1882,6 +1895,17 @@ USAGE = """brain: the second brain command
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
   notify [--task SLUG] [--key KEY] MESSAGE
 
+  capture TEXT [--src S]        quick note to sort later (S: text, voice, clip, web)
+  captures [--json]             open captures with a suggested destination
+  capture-accept ID [--kind log|task|remind] [--dest SLUG]
+  capture-dismiss ID
+  query QUESTION [--json]       answer a question from the brain (read-only model run)
+  query --history [--json]      earlier questions and answers
+  status [--json]               health checks, tick and agent history, activity
+  config KEY VALUE              change one setting in ~/brain/config (validated)
+  graph [--all] [--json]        projects, tasks and decisions and how they connect
+  projects [--json]             tasks grouped by the repo their sessions ran in
+  search QUERY [--json]         find tasks, log lines, decisions and archived tasks
   serve [--port N] [--open]     local web page (127.0.0.1 only): today's tasks, with actions
 
   transcript SESSION_ID         condensed tail of a session transcript (agent use)
@@ -1973,6 +1997,112 @@ def main(argv):
         p.add_argument("--at")
         a = p.parse_args(rest)
         cmd_log(a.slug, a.text, a.session, a.at)
+        return 0
+    if cmd in ("capture", "captures", "capture-accept", "capture-dismiss"):
+        import brain_captures as C
+        core = sys.modules[__name__]
+        if cmd == "capture":
+            p.add_argument("text")
+            p.add_argument("--src", default="TEXT")
+            a = p.parse_args(rest)
+            print("captured %s" % C.add(core, a.text, a.src))
+        elif cmd == "captures":
+            p.add_argument("--json", action="store_true")
+            a = p.parse_args(rest)
+            caps = C.open_captures(core)
+            if a.json:
+                print(json.dumps(caps, indent=1, ensure_ascii=False))
+            for c in [] if a.json else caps:
+                print("%s %s %-5s %s  -> %s %s" % (c["id"], c["at"], c["src"], c["text"], c["kind"], c["dest"]))
+        elif cmd == "capture-accept":
+            p.add_argument("id")
+            p.add_argument("--kind", choices=C.KINDS)
+            p.add_argument("--dest")
+            a = p.parse_args(rest)
+            print("capture %s -> %s" % (a.id, C.accept(core, a.id, a.kind, a.dest)))
+        else:
+            p.add_argument("id")
+            a = p.parse_args(rest)
+            C.dismiss(core, a.id)
+            print("capture %s dismissed" % a.id)
+        return 0
+    if cmd == "query":
+        import brain_ask
+        p.add_argument("question", nargs="?", default="")
+        p.add_argument("--json", action="store_true")
+        p.add_argument("--history", action="store_true")
+        a = p.parse_args(rest)
+        core = sys.modules[__name__]
+        if a.history:
+            h = brain_ask.history(core)
+            print(json.dumps(h, indent=1, ensure_ascii=False) if a.json else "\n\n".join(
+                "%s  Q: %s\n%s" % (x["at"], x["question"], x["answer"]) for x in h))
+            return 0
+        try:
+            item = brain_ask.ask(core, a.question)
+        except brain_ask.AskError as e:
+            raise BrainError(str(e))
+        if a.json:
+            print(json.dumps(item, indent=1, ensure_ascii=False))
+        else:
+            print(item["answer"] + ("\n\nrefs: " + ", ".join(item["refs"]) if item["refs"] else ""))
+        return 0
+    if cmd == "status":
+        import brain_status
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        st = brain_status.status(sys.modules[__name__])
+        if a.json:
+            print(json.dumps(st, indent=1, ensure_ascii=False))
+            return 0
+        for c in st["checks"]:
+            print("%-4s %-16s %s" % (c["level"].upper(), c["label"], c["detail"]))
+        print("tick: %d today, every %d min; agent: %d runs (%d failed), model %s" % (
+            st["tick"]["today"], st["tick"]["every_minutes"], st["agent"]["runs"],
+            st["agent"]["failed"], st["agent"]["model"]))
+        return 0
+    if cmd == "config":
+        import brain_status
+        p.add_argument("key")
+        p.add_argument("value")
+        a = p.parse_args(rest)
+        brain_status.set_config(sys.modules[__name__], a.key, a.value)
+        print("%s=%s" % (a.key, a.value.strip()))
+        return 0
+    if cmd == "graph":
+        import brain_graph
+        p.add_argument("--json", action="store_true")
+        p.add_argument("--all", action="store_true", help="include done tasks")
+        a = p.parse_args(rest)
+        g = brain_graph.graph(sys.modules[__name__], a.all)
+        if a.json:
+            print(json.dumps(g, indent=1, ensure_ascii=False))
+        else:
+            print("%d nodes, %d edges" % (len(g["nodes"]), len(g["edges"])))
+            for e in g["edges"]:
+                print("%-8s %s -- %s" % (e["kind"], e["a"], e["b"]))
+        return 0
+    if cmd == "projects":
+        import brain_projects
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        ps = brain_projects.projects(sys.modules[__name__])
+        if a.json:
+            print(json.dumps(ps, indent=1, ensure_ascii=False))
+        for g in [] if a.json else ps:
+            print("%-20s %-8s %d tasks (%d active, %d waiting, %d blocked, %d done)" % (
+                g["name"], g["state"], g["total"], g["active"], g["waiting"], g["blocked"], g["done"]))
+        return 0
+    if cmd == "search":
+        import brain_search
+        p.add_argument("query")
+        p.add_argument("--json", action="store_true")
+        a = p.parse_args(rest)
+        hits = brain_search.search(sys.modules[__name__], a.query)
+        if a.json:
+            print(json.dumps(hits, indent=1, ensure_ascii=False))
+        for h in [] if a.json else hits:
+            print(one_line("%-8s %-24s %s  (%s)" % (h["type"], h["slug"], h["label"], h["hint"]), 200))
         return 0
     if cmd == "serve":
         p.add_argument("--port", type=int, default=7477)
@@ -2074,28 +2204,39 @@ import secrets
 import sys
 import webbrowser
 
+import brain_ask
+import brain_captures
+import brain_graph
+import brain_projects
+import brain_search
+import brain_status
+
 try:
     from http.server import ThreadingHTTPServer as HTTPServer
 except ImportError:  # python < 3.7
     from http.server import HTTPServer
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-ASSETS = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/index.html": ("index.html", "text/html; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-    "/app.css": ("app.css", "text/css; charset=utf-8"),
-}
+PAGES = ("/", "/index.html")
+ASSET_RE = re.compile(r"^/([a-z][a-z0-9-]*)\.(js|css)$")
+CTYPES = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
+          "html": "text/html; charset=utf-8"}
 TOKEN_PLACEHOLDER = "__BRAIN_TOKEN__"
 MAX_BODY = 64 * 1024
 SOURCE = "you"
 FOLLOWUP_ID_RE = re.compile(r"^[0-9a-f]{4,6}$")
+NOTE_RE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*$")
 ROUTES = [
     (re.compile(r"^/api/tasks/([^/]+)/status$"), "status"),
     (re.compile(r"^/api/tasks/([^/]+)/log$"), "log"),
     (re.compile(r"^/api/followups/([^/]+)/done$"), "fdone"),
+    (re.compile(r"^/api/captures()$"), "capture"),
+    (re.compile(r"^/api/captures/([^/]+)/accept$"), "accept"),
+    (re.compile(r"^/api/captures/([^/]+)/dismiss$"), "dismiss"),
+    (re.compile(r"^/api/notes/([^/]+)/dismiss$"), "note"),
+    (re.compile(r"^/api/config()$"), "config"),
 ]
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
@@ -2120,7 +2261,7 @@ def session_info(core, sid, sessions):
 
 def task_info(core, x, fus, sessions):
     sess = [session_info(core, sid, sessions) for sid in x.get_list("sessions")]
-    folders = [s["folder"] for s in sess if s["folder"]]
+    project = brain_projects.task_project(x, sessions)
     return {
         "slug": x.slug,
         "title": x.get("title"),
@@ -2131,7 +2272,7 @@ def task_info(core, x, fus, sessions):
         "direction": x.text_of("Direction"),
         "next": x.text_of("Next"),
         "tickets": x.get_list("ticket"),
-        "project": folders[-1] if folders else "",
+        "project": "" if project == brain_projects.UNFILED else project,
         "sessions": sess,
         "log": [{"at": core.fmt(w) if w else "", "source": src, "text": txt}
                 for w, src, txt in x.log_entries()],
@@ -2149,7 +2290,19 @@ def state(core):
         if x.get("status") == "done" and core.task_updated(x).date() != t.date():
             continue
         out.append(task_info(core, x, fus, sessions))
-    return {"now": core.fmt(t), "tasks": out}
+    loose = [f.as_dict() for f in fus if not f.done and not os.path.isfile(core.task_path(f.slug))]
+    return {"now": core.fmt(t), "model": core.load_config().get("AGENT_MODEL") or "haiku", "tasks": out, "captures": brain_captures.open_captures(core),
+            "notes": notes(core), "reminders": loose, "projects": brain_projects.projects(core)}
+
+
+def notes(core):
+    """The brain's messages to the owner (inbox.md), newest last."""
+    out = []
+    for line in core.inbox_items():
+        m = NOTE_RE.match(line)
+        at, task, text = m.groups() if m else ("", "", line.lstrip("- "))
+        out.append({"id": core.short_id(line), "at": at, "task": task, "text": text})
+    return out
 
 
 # ---------------------------------------------------------------- actions
@@ -2180,6 +2333,33 @@ def act(core, kind, ident, body):
             raise HttpError(400, "result must be text")
         with core.write_lock():
             core.tick_followup(ident, core.one_line(result, 200), source=SOURCE)
+    elif kind == "capture":
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HttpError(400, "write something to capture")
+        brain_captures.add(core, text, "WEB")
+    elif kind in ("accept", "dismiss"):
+        if not FOLLOWUP_ID_RE.match(ident):
+            raise HttpError(404, "no capture %r" % ident)
+        if kind == "dismiss":
+            brain_captures.dismiss(core, ident)
+            return
+        ckind, dest = body.get("kind"), body.get("dest")
+        if ckind is not None and ckind not in brain_captures.KINDS:
+            raise HttpError(400, "kind must be one of %s" % ", ".join(brain_captures.KINDS))
+        if dest is not None and (not isinstance(dest, str) or (dest and not core.slug_ok(dest))):
+            raise HttpError(400, "dest must be a task slug")
+        brain_captures.accept(core, ident, ckind, dest or None)
+    elif kind == "config":
+        key, value = body.get("key"), body.get("value")
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise HttpError(400, "send key and value")
+        brain_status.set_config(core, key, value, page=True)
+    elif kind == "note":
+        lines = [l for l in core.inbox_items() if core.short_id(l) == ident]
+        if not lines:
+            raise HttpError(404, "no note %r" % ident)
+        core.clear_inbox(lines)
 
 
 # ---------------------------------------------------------------- http
@@ -2255,16 +2435,30 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.check_host()
             path = urlsplit(self.path).path
-            if path in ASSETS:
-                name, ctype = ASSETS[path]
+            m = ASSET_RE.match(path)
+            if path in PAGES or (m and os.path.isfile(os.path.join(WEB_DIR, path[1:]))):
+                name = "index.html" if path in PAGES else path[1:]
                 with open(os.path.join(WEB_DIR, name), "rb") as f:
                     data = f.read()
                 if name == "index.html":
                     data = data.replace(TOKEN_PLACEHOLDER.encode(), self.server.token.encode())
-                return self.send(200, data, ctype)
+                return self.send(200, data, CTYPES[name.rsplit(".", 1)[1]])
             if path == "/api/state":
                 self.check_token()
                 return self.send_json(200, state(self.server.core))
+            if path == "/api/ask":
+                self.check_token()
+                return self.send_json(200, {"history": brain_ask.history(self.server.core)})
+            if path == "/api/graph":
+                self.check_token()
+                return self.send_json(200, brain_graph.graph(self.server.core))
+            if path == "/api/status":
+                self.check_token()
+                return self.send_json(200, brain_status.status(self.server.core))
+            if path == "/api/search":
+                self.check_token()
+                q = parse_qs(urlsplit(self.path).query).get("q", [""])[0][:200]
+                return self.send_json(200, {"results": brain_search.search(self.server.core, q)})
             raise HttpError(404, "not found")
         except Exception as e:  # every error becomes a JSON reply
             self.fail(e)
@@ -2275,6 +2469,15 @@ class Handler(BaseHTTPRequestHandler):
             self.check_origin()
             self.check_token()
             path = urlsplit(self.path).path
+            if path == "/api/ask":
+                body = self.read_json()
+                q = body.get("question")
+                if not isinstance(q, str) or not q.strip():
+                    raise HttpError(400, "ask a question")
+                try:
+                    return self.send_json(200, brain_ask.ask(self.server.core, q))
+                except brain_ask.AskError as e:
+                    raise HttpError(429, str(e))
             for rx, kind in ROUTES:
                 m = rx.match(path)
                 if m:
@@ -2309,6 +2512,684 @@ def serve(port, open_browser, core):
         httpd.server_close()
     return 0
 __BRAIN_EOF__
+put_file "$BRAIN/bin/brain_captures.py" 644 <<'__BRAIN_EOF__'
+"""Captures: the owner's quick notes, sorted into the brain on accept.
+
+captures.md holds one line per capture:
+    - [ ] 2026-10-08 21:40 | TEXT | call the printer about the sleeves
+    - [x] 2026-10-08 21:41 | VOICE | buy batteries -> task buy-batteries
+A suggestion (log on a task / new task / reminder) is computed when listed,
+from the text alone, without a model. Accepting applies it (or an override)
+through the same functions as the CLI; entries are logged as "you".
+"""
+import datetime as dt
+import os
+import re
+
+CAP_RE = re.compile(r"^\s*-\s*\[( |x|X)\]\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*\|\s*([A-Z]+)\s*\|\s*(.*?)\s*$")
+KINDS = ("log", "task", "remind")
+SOURCES = ("TEXT", "VOICE", "CLIP", "WEB")
+TEXT_MAX = 300
+SOURCE = "you"
+REMIND_RE = re.compile(r"^\s*(remind|reminder|don'?t forget|follow ?up)\b", re.I)
+STOP = set("""a an and are as at be but by can do for from get got had has have how i if in into is it
+its just me my need needs not of on or our so some that the their then there this to too up us was we
+were what when will with you your about after again also all any back been before being both could
+does done each else even ever few here into more most much must new now off once only other over same
+should since still such than them these they those through under until very want way well which while
+who why would yet look looks fine maybe should today tomorrow""".split())
+
+
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+DAY_RE = re.compile(r"\b(today|tonight|tomorrow|(mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b", re.I)
+TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b", re.I)
+
+
+def when_from(core, text, base=None):
+    """When a reminder in this text should fire: a day (weekday, today,
+    tomorrow) and/or a time (16:30, 4pm, at 9am); else the next workday 09:00."""
+    base = base or core.now()
+    day_m, time_m = DAY_RE.search(text), TIME_RE.search(text)
+    hour, minute = 9, 0
+    if time_m:
+        if time_m.group(1):
+            hour, minute = int(time_m.group(1)) % 12, int(time_m.group(2) or 0)
+            if time_m.group(3).lower() == "pm":
+                hour += 12
+        else:
+            hour, minute = int(time_m.group(4)), int(time_m.group(5))
+        if hour > 23 or minute > 59:
+            time_m, hour, minute = None, 9, 0
+    if day_m:
+        word = day_m.group(1).lower()
+        if word in ("today", "tonight"):
+            day = base.date()
+            if word == "tonight" and not time_m:
+                hour = 19
+        elif word == "tomorrow":
+            day = base.date() + dt.timedelta(days=1)
+        else:
+            ahead = (DAYS.index(word[:3]) - base.weekday()) % 7 or 7
+            day = base.date() + dt.timedelta(days=ahead)
+        return core.fmt(dt.datetime(day.year, day.month, day.day, hour, minute))
+    if time_m:
+        t = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return core.fmt(t if t > base else t + dt.timedelta(days=1))
+    return core.fmt(core.next_workday_at(core.load_config(), base))
+
+
+def tokens(text):
+    out = set()
+    for w in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(w) < 3 or w in STOP:
+            continue
+        if len(w) > 4 and w.endswith("s"):
+            w = w[:-1]
+        out.add(w)
+    return out
+
+
+def slug_from(core, text):
+    words = [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1 and w not in STOP]
+    base = "-".join(words[:3]) or "captured-note"
+    if not core.slug_ok(base):
+        base = (base + "-note") if "-" not in base else base
+    slug, n = base, 2
+    while os.path.exists(core.task_path(slug)) or not core.slug_ok(slug):
+        slug = "%s-%d" % ("-".join(base.split("-")[:3]), n)
+        n += 1
+    return slug
+
+
+def suggest(core, text, tasks):
+    """(kind, dest): a reminder, a log entry on the best-matching open task, or a new task."""
+    if REMIND_RE.search(text):
+        best = best_task(text, tasks)
+        return "remind", best or ""
+    best = best_task(text, tasks)
+    if best:
+        return "log", best
+    return "task", slug_from(core, text)
+
+
+def best_task(text, tasks):
+    words = tokens(text)
+    best, score = None, 0
+    for x in tasks:
+        if x.get("status") == "done":
+            continue
+        slug_words = tokens(x.slug.replace("-", " "))
+        task_words = slug_words | tokens(x.get("title")) | tokens(x.text_of("Goal"))
+        shared = words & task_words
+        s = len(shared) + (1 if any(len(w) >= 5 for w in shared & slug_words) else 0)
+        if s > score:
+            best, score = x.slug, s
+    return best if score >= 2 else None
+
+
+class Capture(object):
+    def __init__(self, core, idx, line, m, nth=0):
+        self.idx = idx
+        self.line = line
+        self.done = m.group(1) != " "
+        self.at = m.group(2)
+        self.src = m.group(3)
+        rest = m.group(4)
+        self.text, _, self.result = rest.partition(" -> ")
+        # Identical captures in the same minute are told apart by their order.
+        key = "%s|%s|%s" % (self.at, self.src, self.text)
+        self.id = core.short_id(key if nth == 0 else "%s|%d" % (key, nth))
+
+    def as_dict(self, core, tasks):
+        kind, dest = suggest(core, self.text, tasks)
+        titles = dict((x.slug, x.get("title")) for x in tasks)
+        return {"id": self.id, "at": self.at, "src": self.src, "text": self.text, "done": self.done,
+                "result": self.result, "kind": kind, "dest": dest, "when": when_from(core, self.text),
+                "destTitle": titles.get(dest, "")}
+
+
+def path(core):
+    return os.path.join(core.BRAIN, "captures.md")
+
+
+def load(core):
+    lines = core.read(path(core), "# Captures\n\n").splitlines()
+    caps, seen = [], {}
+    for i, ln in enumerate(lines):
+        m = CAP_RE.match(ln)
+        if m:
+            key = (m.group(2), m.group(3), m.group(4).partition(" -> ")[0])
+            caps.append(Capture(core, i, ln, m, seen.get(key, 0)))
+            seen[key] = seen.get(key, 0) + 1
+    return lines, caps
+
+
+def open_captures(core):
+    tasks = core.all_tasks()
+    return [c.as_dict(core, tasks) for c in load(core)[1] if not c.done]
+
+
+def find(core, cid):
+    lines, caps = load(core)
+    for c in caps:
+        if c.id == cid:
+            if c.done:
+                raise core.BrainError("capture %s is already %s" % (cid, c.result or "closed"))
+            return lines, c
+    raise core.BrainError("no open capture %r" % cid)
+
+
+def add(core, text, src="TEXT"):
+    text = core.one_line((text or "").replace("|", "/"), TEXT_MAX)
+    if not text:
+        raise core.BrainError("nothing to capture")
+    src = (src or "TEXT").upper()
+    if src not in SOURCES:
+        raise core.BrainError("source must be one of %s" % ", ".join(SOURCES))
+    at = core.fmt(core.now())
+    with core.write_lock():
+        if not os.path.isfile(path(core)):
+            core.write_atomic(path(core), "# Captures\n\n")
+        core.append_line(path(core), "- [ ] %s | %s | %s" % (at, src, text))
+    return load(core)[1][-1].id
+
+
+def close(core, lines, c, result):
+    lines[c.idx] = "- [x] %s | %s | %s -> %s" % (c.at, c.src, c.text, result)
+    core.write_atomic(path(core), "\n".join(lines) + "\n")
+
+
+def accept(core, cid, kind=None, dest=None):
+    """Apply the suggestion (or the given kind/dest). Returns 'kind dest'."""
+    if kind is not None and kind not in KINDS:
+        raise core.BrainError("kind must be one of %s" % ", ".join(KINDS))
+    _, c = find(core, cid)
+    s_kind, s_dest = suggest(core, c.text, core.all_tasks())
+    kind = kind or s_kind
+    dest = dest if dest is not None else (s_dest if kind == s_kind else "")
+    if kind == "log":
+        if not dest or not os.path.isfile(core.task_path(dest)):
+            raise core.BrainError("no task %r to log to" % dest)
+        core.log_entry(dest, c.text, source=SOURCE)
+    elif kind == "task":
+        dest = dest or slug_from(core, c.text)
+        if not core.slug_ok(dest):
+            raise core.BrainError("slug must be kebab-case, 2 to 4 words: %r" % dest)
+        if os.path.exists(core.task_path(dest)):
+            raise core.BrainError("task %s already exists" % dest)
+        new_task(core, dest, c.text)
+    elif kind == "remind":
+        core.cmd_followup(when_from(core, c.text), dest or "inbox", c.text, remind=True, quiet=True)
+    with core.write_lock():
+        lines, c = find(core, cid)
+        close(core, lines, c, "%s %s" % (kind, dest or "inbox"))
+    return "%s %s" % (kind, dest or "inbox")
+
+
+def new_task(core, slug, text):
+    class A(object):
+        pass
+    a = A()
+    a.slug, a.title, a.goal, a.direction, a.next = slug, text, None, None, text
+    a.ticket, a.session = None, None
+    core.cmd_new(a, quiet=True, note="Task created from capture", source=SOURCE)
+
+
+def dismiss(core, cid):
+    with core.write_lock():
+        lines, c = find(core, cid)
+        close(core, lines, c, "dismissed")
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_search.py" 644 <<'__BRAIN_EOF__'
+"""Search across the brain: tasks, their logs, decisions and archived tasks.
+
+Every word of the query must appear (case-insensitive, any order) in one
+field. Results are ranked by where they matched (title, then goal/next/
+direction, then decisions, then log lines) and then by recency.
+"""
+import re
+
+LIMIT = 30
+RANK = {"task": 0, "archived": 1, "decision": 2, "log": 3}
+
+
+def words(q):
+    return [w for w in re.split(r"\s+", (q or "").lower().strip()) if w]
+
+
+def matches(ws, *texts):
+    hay = " ".join(t or "" for t in texts).lower()
+    return all(w in hay for w in ws)
+
+
+def task_hits(core, x, ws, archived=False):
+    kind = "archived" if archived else "task"
+    out = []
+    upd = core.fmt(core.task_updated(x))
+    if matches(ws, x.get("title"), x.slug, x.text_of("Goal"), x.text_of("Next"), x.text_of("Direction")):
+        title_hit = matches(ws, x.get("title"), x.slug)
+        out.append({"type": kind, "slug": x.slug, "label": x.get("title") or x.slug,
+                    "hint": x.get("status") or "", "at": upd, "score": 0 if title_hit else 1})
+    if archived:
+        return out
+    for w, src, txt in x.log_entries():
+        if matches(ws, txt):
+            out.append({"type": "log", "slug": x.slug, "label": txt,
+                        "hint": x.get("title") or x.slug, "at": core.fmt(w) if w else "", "score": 3})
+    return out
+
+
+def search(core, q, limit=LIMIT):
+    ws = words(q)
+    if not ws:
+        return []
+    hits = []
+    for x in core.all_tasks():
+        hits.extend(task_hits(core, x, ws))
+    for x in core.archived_tasks():
+        hits.extend(task_hits(core, x, ws, archived=True))
+    for d in core.parse_decisions():
+        if matches(ws, d.get("title"), d.get("decision"), d.get("why"), d.get("rejected")):
+            hits.append({"type": "decision", "slug": d.get("task", ""), "label": d.get("title", ""),
+                         "hint": d.get("decision", ""), "at": d.get("date", ""), "score": 2})
+    hits.sort(key=lambda h: h["at"], reverse=True)            # newest first...
+    hits.sort(key=lambda h: (h["score"], RANK[h["type"]]))    # ...within each rank (stable)
+    for h in hits:
+        del h["score"]
+    return hits[:limit]
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_projects.py" 644 <<'__BRAIN_EOF__'
+"""Projects: tasks grouped by the repository their sessions ran in.
+
+A task's project is the git repository (or, failing that, the folder) where
+its most recent linked session started. Tasks with no session are "unfiled".
+A project's state is its most urgent open task: blocked, active, waiting;
+"quiet" when nothing is open.
+"""
+import os
+
+UNFILED = "unfiled"
+STATES = ("blocked", "active", "waiting", "quiet")
+
+
+def project_of(cwd):
+    """Name of the git repo containing cwd, else the folder's own name."""
+    cwd = (cwd or "").rstrip("/")
+    if not cwd:
+        return ""
+    d = cwd
+    while d and d != os.path.dirname(d):
+        if os.path.exists(os.path.join(d, ".git")):
+            return os.path.basename(d)
+        d = os.path.dirname(d)
+    return os.path.basename(cwd)
+
+
+def task_project(x, sessions):
+    for sid in reversed(x.get_list("sessions")):
+        name = project_of((sessions.get(sid) or {}).get("cwd", ""))
+        if name:
+            return name
+    return UNFILED
+
+
+def projects(core):
+    sessions = core.load_sessions()
+    groups = {}
+    for x in core.all_tasks():
+        name = task_project(x, sessions)
+        g = groups.setdefault(name, {"name": name, "total": 0, "active": 0, "waiting": 0,
+                                     "blocked": 0, "done": 0, "updated": "", "tasks": []})
+        status = x.get("status") or "active"
+        g["total"] += 1
+        g[status if status in g else "active"] += 1
+        g["updated"] = max(g["updated"], core.fmt(core.task_updated(x)))
+        g["tasks"].append(x.slug)
+    out = list(groups.values())
+    for g in out:
+        g["state"] = next((s for s in STATES[:3] if g[s]), "quiet")
+    out.sort(key=lambda g: g["updated"], reverse=True)
+    out.sort(key=lambda g: STATES.index(g["state"]))
+    return out
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_status.py" 644 <<'__BRAIN_EOF__'
+"""System status: is the brain healthy, and what has it been doing.
+
+Read-only except `set_config`, which changes one known key with validation.
+"""
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+
+TICK_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}) tick: (.*)$")
+LABEL = "com.brain.tick"
+# Keys the web page may change, with their allowed values.
+PAGE_KEYS = {"NOTIFY": ("on", "off"), "AGENT_MODEL": ("haiku", "sonnet", "opus")}
+INT_KEYS = ("TICK_MINUTES", "STALE_TASK_DAYS", "STALLED_SESSION_MINUTES", "ARCHIVE_AFTER_DAYS",
+            "SESSION_UPDATE_GAP_MINUTES", "IDLE_ASK_MINUTES", "AGENT_MAX_TRANSCRIPTS",
+            "AGENT_MAX_RESUMES", "AGENT_TIMEOUT_MINUTES")
+
+
+def tick_lines(core):
+    out = []
+    for ln in core.read(core.state_path("tick.log")).splitlines():
+        m = TICK_RE.match(ln)
+        if m:
+            out.append((core.parse_ts(m.group(1)), m.group(2)))
+    return out
+
+
+def tick_info(core, cfg, t):
+    lines = tick_lines(core)
+    last = lines[-1] if lines else (None, "")
+    today = [r for w, r in lines if w and w.date() == t.date()]
+    agent = [(w, r) for w, r in lines if "agent" in r]
+    failed = [x for x in agent if "FAILED" in x[1] or "gave up" in x[1]]
+    return ({"last": core.fmt(last[0]) if last[0] else "", "last_result": last[1],
+             "every_minutes": core.cfg_int(cfg, "TICK_MINUTES"), "today": len(today),
+             "recent": [{"at": core.fmt(w), "result": r} for w, r in lines[-12:][::-1]]},
+            {"runs": len(agent), "failed": len(failed), "today": len([1 for w, _ in agent if w.date() == t.date()]),
+             "last": core.fmt(agent[-1][0]) if agent else "", "last_result": agent[-1][1] if agent else "",
+             "model": cfg.get("AGENT_MODEL") or "haiku"})
+
+
+def check(cid, label, level, detail):
+    return {"id": cid, "label": label, "level": level, "detail": detail}
+
+
+def hooks_check(core):
+    try:
+        with open(core.settings_file(), encoding="utf-8") as f:
+            hooks = (json.load(f) or {}).get("hooks") or {}
+    except (OSError, ValueError) as e:
+        return check("hooks", "session hooks", "bad", "settings.json unreadable: %s" % e)
+    have = [ev for ev in ("SessionStart", "SessionEnd")
+            if any(core.is_ours(h.get("command")) for grp in hooks.get(ev) or [] for h in grp.get("hooks") or [])]
+    if len(have) == 2:
+        return check("hooks", "session hooks", "ok", "start and end hooks installed")
+    return check("hooks", "session hooks", "bad", "missing: " + ", ".join(
+        ev for ev in ("SessionStart", "SessionEnd") if ev not in have))
+
+
+def launchd_check():
+    if sys.platform != "darwin" or os.environ.get("BRAIN_NO_LAUNCHD") == "1":
+        return None
+    try:
+        r = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as e:
+        return check("launchd", "background job", "warn", "could not ask launchd: %s" % e)
+    if r.returncode != 0:
+        return check("launchd", "background job", "bad",
+                     "not loaded; run ~/brain/bin/install-brain.sh to load it again")
+    m = re.search(r"last exit code = (.*)", r.stdout)
+    return check("launchd", "background job", "ok", "loaded; last exit " + (m.group(1).strip() if m else "?"))
+
+
+def tick_check(tick, t):
+    if not tick["last"]:
+        return check("tick", "last tick", "warn", "no tick yet")
+    age = (t - dt.datetime.strptime(tick["last"], "%Y-%m-%d %H:%M")).total_seconds() / 60
+    level = "ok" if age <= 2 * tick["every_minutes"] + 1 else ("warn" if age < 24 * 60 else "bad")
+    return check("tick", "last tick", level, "%s (%d min ago): %s" % (tick["last"], age, tick["last_result"]))
+
+
+def git_check(core):
+    if not os.path.isdir(os.path.join(core.BRAIN, ".git")):
+        return check("git", "history", "bad", "~/brain is not a git repository")
+    last = core.git("log", "-1", "--format=%cd · %s", "--date=format:%Y-%m-%d %H:%M")
+    remote = core.git("remote", "get-url", "origin")
+    last_s = (last.stdout or "").strip() if last.returncode == 0 else "no commits"
+    if remote.returncode != 0:
+        return check("git", "history", "warn", "last commit %s; no backup remote" % last_s)
+    return check("git", "history", "ok", "last commit %s; backed up to %s" % (last_s, remote.stdout.strip()))
+
+
+def activity(core, t):
+    """Sessions started and log lines written per hour, oldest hour first (24 buckets)."""
+    start = (t - dt.timedelta(hours=23)).replace(minute=0)
+    buckets = lambda: [0] * 24
+    sess, logs = buckets(), buckets()
+
+    def put(arr, w):
+        if w and w >= start:
+            i = int((w - start).total_seconds() // 3600)
+            if 0 <= i < 24:
+                arr[i] += 1
+    for s in core.load_sessions().values():
+        put(sess, s.get("start"))
+    for x in core.all_tasks():
+        for w, _, _ in x.log_entries():
+            put(logs, w)
+    return {"from": core.fmt(start), "sessions": sess, "log": logs}
+
+
+def status(core):
+    cfg = core.load_config()
+    t = core.now()
+    tick, agent = tick_info(core, cfg, t)
+    cb = core.claude_bin(cfg)
+    import brain_captures
+    checks = [c for c in (
+        launchd_check(),
+        tick_check(tick, t),
+        check("agent", "brain agent", "warn" if agent["failed"] and agent["last_result"].endswith(("FAILED", "gave up")) else "ok",
+              "%d runs, %d failed; last %s" % (agent["runs"], agent["failed"], agent["last"] or "never")),
+        check("claude", "claude cli", "ok" if cb and os.path.isfile(cb) else "bad", cb or "not found; set CLAUDE_BIN"),
+        hooks_check(core),
+        git_check(core),
+    ) if c]
+    _, fus = core.load_followups()
+    return {
+        "now": core.fmt(t), "checks": checks, "tick": tick, "agent": agent,
+        "store": {"tasks": len(core.all_tasks()), "archived": len(core.archived_tasks()),
+                  "decisions": len(core.parse_decisions()), "followups_open": len([f for f in fus if not f.done]),
+                  "captures": len([c for c in brain_captures.load(core)[1] if not c.done]),
+                  "sessions": len(core.load_sessions()),
+                  "path": core.BRAIN.replace(core.HOME, "~", 1) if core.BRAIN.startswith(core.HOME + "/") else core.BRAIN},
+        "activity": activity(core, t),
+        "config": dict((k, cfg.get(k, "")) for k, _ in core.DEFAULT_CONFIG),
+        "page_keys": dict((k, list(v)) for k, v in PAGE_KEYS.items()),
+    }
+
+
+def validate(core, key, value):
+    known = [k for k, _ in core.DEFAULT_CONFIG]
+    if key not in known:
+        raise core.BrainError("unknown key %r (known: %s)" % (key, ", ".join(known)))
+    if key in PAGE_KEYS and value not in PAGE_KEYS[key]:
+        raise core.BrainError("%s must be one of %s" % (key, ", ".join(PAGE_KEYS[key])))
+    if key in INT_KEYS and not re.match(r"^[1-9]\d{0,3}$", value):
+        raise core.BrainError("%s must be a whole number" % key)
+    if key == "WORK_HOURS" and not re.match(r"^\d{1,2}:\d{2}-\d{1,2}:\d{2}(\s+\S+)?$", value):
+        raise core.BrainError("WORK_HOURS looks like 08:00-18:00 Mon-Fri")
+    if key == "CLAUDE_BIN" and value and not os.access(value, os.X_OK):
+        raise core.BrainError("CLAUDE_BIN must be an executable file")
+
+
+def set_config(core, key, value, page=False):
+    value = (value or "").strip()
+    if page and key not in PAGE_KEYS:
+        raise core.BrainError("the page can only change %s" % ", ".join(PAGE_KEYS))
+    validate(core, key, value)
+    with core.write_lock():
+        lines = core.read(core.CONFIG).splitlines()
+        found = False
+        for i, ln in enumerate(lines):
+            if re.match(r"^\s*%s\s*=" % re.escape(key), ln):
+                lines[i] = "%s=%s" % (key, value)
+                found = True
+        if not found:
+            lines.append("%s=%s" % (key, value))
+        core.write_atomic(core.CONFIG, "\n".join(lines).rstrip() + "\n")
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_ask.py" 644 <<'__BRAIN_EOF__'
+"""Ask: answer the owner's questions from the brain with a read-only model run.
+
+The model runs headless in ~/brain as an agent run (hooks skip it), with only
+Read/Grep/Glob and the read-only `brain` commands (board, show, search,
+projects). It may not edit anything. Questions and answers are kept in
+.state/ask.jsonl so the page can show the conversation.
+"""
+import json
+import os
+import re
+import subprocess
+import threading
+
+QUESTION_MAX = 500
+HISTORY_MAX = 200
+TIMEOUT_SECONDS = 180
+REFS_RE = re.compile(r"^\s*REFS:\s*(.*)$", re.I | re.M)
+_busy = threading.Lock()
+
+PROMPT = """You answer the owner's question about their own work, using only their
+second brain at {brain} (your working directory). It is {now} local time.
+
+How to look things up (read-only; you cannot and must not change anything):
+- The board below lists open tasks, follow-ups and captures.
+- `{cmd} show SLUG` prints a task: Goal, Direction, Next and its full Log.
+- `{cmd} search "words"` finds tasks, log lines, decisions and archived tasks.
+- `{cmd} projects` groups tasks by repository.
+- decisions.md holds big decisions; archive/ holds finished tasks.
+Call the brain command by its full path, one command per Bash call.
+
+Answer in at most 6 short lines, plainly, with dates and task names where they
+help. Say so if the brain does not say. Then end with one line:
+REFS: slug-one, slug-two   (the tasks you used; empty if none)
+
+{board}
+Question: {question}
+"""
+
+
+class AskError(Exception):
+    pass
+
+
+def history_path(core):
+    return core.state_path("ask.jsonl")
+
+
+def history(core, limit=50):
+    out = []
+    for ln in core.read(history_path(core)).splitlines()[-limit:]:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+    return out
+
+
+def remember(core, item):
+    p = history_path(core)
+    core.append_line(p, json.dumps(item, ensure_ascii=False))
+    lines = core.read(p).splitlines()
+    if len(lines) > HISTORY_MAX:
+        core.write_atomic(p, "\n".join(lines[-HISTORY_MAX:]) + "\n")
+
+
+def split_refs(core, text):
+    m = REFS_RE.search(text)
+    refs = []
+    if m:
+        for r in re.split(r"[,\s]+", m.group(1)):
+            r = r.strip("`'\". ")
+            if r and core.slug_ok(r) and r not in refs and (
+                    os.path.isfile(core.task_path(r)) or any(x.slug == r for x in core.archived_tasks())):
+                refs.append(r)
+        text = REFS_RE.sub("", text)
+    return text.strip(), refs
+
+
+def ask(core, question):
+    question = core.one_line(question or "", QUESTION_MAX + 1)
+    if not question:
+        raise core.BrainError("ask a question")
+    if len(question) > QUESTION_MAX:
+        raise core.BrainError("question too long (max %d characters)" % QUESTION_MAX)
+    cfg = core.load_config()
+    cb = core.claude_bin(cfg)
+    if not cb:
+        raise core.BrainError("claude CLI not found; set CLAUDE_BIN in ~/brain/config")
+    if not _busy.acquire(False):
+        raise AskError("already answering a question; try again in a moment")
+    try:
+        prompt = PROMPT.format(brain=core.BRAIN, now=core.fmt(core.now()), cmd=core.BRAIN_CMD,
+                               board=core.board_text(), question=question)
+        allowed = ["Read", "Grep", "Glob"] + [
+            "Bash(%s %s *)" % (c, sub) for c in (core.BRAIN_CMD, "~/brain/bin/brain")
+            for sub in ("show", "search", "projects", "board")]
+        args = [cb, "-p", "--model", cfg.get("AGENT_MODEL") or "haiku", "--permission-mode", "dontAsk",
+                "--allowedTools"] + allowed + ["--max-turns", "12", "--output-format", "text"]
+        try:
+            r = subprocess.run(args, input=prompt, cwd=core.BRAIN, env=core.clean_env({"BRAIN_AGENT": "1"}),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                               timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise core.BrainError("claude took longer than %d s; try a narrower question" % TIMEOUT_SECONDS)
+        except OSError as e:
+            raise core.BrainError("could not run claude (%s): %s" % (cb, e))
+        if r.returncode != 0 or not (r.stdout or "").strip():
+            detail = core.one_line((r.stderr or r.stdout or "no output").strip(), 200)
+            raise core.BrainError("claude failed (exit %d): %s" % (r.returncode, detail))
+        answer, refs = split_refs(core, r.stdout)
+        item = {"at": core.fmt(core.now()), "question": question, "answer": answer, "refs": refs,
+                "model": cfg.get("AGENT_MODEL") or "haiku"}
+        remember(core, item)
+        return item
+    finally:
+        _busy.release()
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_graph.py" 644 <<'__BRAIN_EOF__'
+"""Graph: how the brain's pieces connect.
+
+Nodes are projects, tasks and decisions. A task links to its project and to
+any other task a session worked on as well; a decision links to its task.
+Done tasks are left out unless all=True (their decisions go with them).
+"""
+import brain_projects
+
+
+def graph(core, all_tasks=False):
+    sessions = core.load_sessions()
+    tasks = [x for x in core.all_tasks() if all_tasks or x.get("status") != "done"]
+    nodes, edges, seen = [], [], set()
+
+    def node(nid, kind, label, **extra):
+        if nid not in seen:
+            seen.add(nid)
+            nodes.append(dict(id=nid, kind=kind, label=label, **extra))
+
+    by_session = {}
+    for x in tasks:
+        tid = "task:" + x.slug
+        node(tid, "task", x.get("title") or x.slug, slug=x.slug, status=x.get("status") or "active",
+             log=len(x.log_entries()))
+        project = brain_projects.task_project(x, sessions)
+        pid = "project:" + project
+        node(pid, "project", project)
+        edges.append({"a": tid, "b": pid, "kind": "project"})
+        for sid in x.get_list("sessions"):
+            by_session.setdefault(sid, []).append(tid)
+    pairs = set()
+    for tids in by_session.values():
+        for i, a in enumerate(tids):
+            for b in tids[i + 1:]:
+                if a != b and (b, a) not in pairs:
+                    pairs.add((a, b))
+    edges.extend({"a": a, "b": b, "kind": "session"} for a, b in sorted(pairs))
+    for i, d in enumerate(core.parse_decisions()):
+        tid = "task:" + d.get("task", "")
+        if tid in seen:
+            did = "decision:%d" % i
+            node(did, "decision", d.get("title", ""), date=d.get("date", ""), decision=d.get("decision", ""))
+            edges.append({"a": did, "b": tid, "kind": "decision"})
+    return {"nodes": nodes, "edges": edges}
+__BRAIN_EOF__
 put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
 <!DOCTYPE html>
 <html lang="en">
@@ -2321,7 +3202,7 @@ put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="app.css">
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
 </head>
 <body>
 <div class="chassis">
@@ -2344,42 +3225,15 @@ put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
     </header>
 
     <nav class="rail" aria-label="Main navigation">
-      <button class="key is-on" type="button" aria-current="page">
-        <span class="key-top"><span class="key-k">1</span><span class="key-dot"></span></span>
-        <span class="key-label">Today</span>
-      </button>
+      <div class="rail-keys" id="rail-keys"></div>
       <span class="spacer"></span>
-      <button class="key key-ink" type="button" id="refresh" aria-label="Refresh now">
-        <span class="key-k">↻</span>
-        <span class="key-label">refresh</span>
+      <button class="key key-ink" type="button" id="search-key" aria-label="Search, key Command K">
+        <span class="key-k">⌘K</span>
+        <span class="key-label">search</span>
       </button>
     </nav>
 
-    <main class="panel" aria-labelledby="today-heading">
-      <div class="panel-head">
-        <span class="panel-num">01</span>
-        <h1 id="today-heading">today</h1>
-        <span class="panel-sub" id="sub"></span>
-      </div>
-      <div class="today">
-        <section class="list" aria-label="Tasks">
-          <ul id="tasks" class="rows"></ul>
-          <p id="empty" class="empty" hidden><span class="empty-big">nothing open.</span><span class="empty-sub">tasks appear here when a claude session starts real work</span></p>
-        </section>
-        <section class="detail" id="detail" aria-label="Task detail" hidden>
-          <div id="detail-body"></div>
-          <div class="block">
-            <h2 class="label">updates</h2>
-            <form class="composer" id="composer">
-              <label class="sr-only" for="upd">Post an update</label>
-              <input id="upd" name="upd" autocomplete="off" maxlength="300" placeholder="post an update…">
-              <button type="submit" class="btn-key">POST</button>
-            </form>
-            <ol class="updates" id="updates"></ol>
-          </div>
-        </section>
-      </div>
-    </main>
+    <main class="panel" id="panel" aria-labelledby="view-heading"></main>
   </div>
 </div>
 </body>
@@ -2389,8 +3243,9 @@ put_file "$BRAIN/bin/web/app.css" 644 <<'__BRAIN_EOF__'
 /* Second Brain: Today screen. Tokens follow the Claude Design source
    ("Second Brain.dc.html"): direction A for light, direction B for dark. */
 :root {
-  --chassis: #d4d3ce; --panel: #eeede9; --ink: #141414; --mute: #6f6d67; --line: #c2c0ba;
-  --acc: #ff4f12; --acc-dk: #c23a0a; --acc-ink: #fff; --acc2: #2a56ff;
+  --chassis: #d4d3ce; --panel: #eeede9; --ink: #141414; --mute: #5f5d57; --line: #c2c0ba;
+  --acc: #ff4f12; --acc-dk: #c23a0a; --acc-ink: #141414; --acc2: #2a56ff;
+  --acc-text: #b33608; --bad-ink: #fff; --acc2-ink: #fff; --ok: #1f9d55; --warn: #f5b301;
   --disp: #161616; --disp-ink: #efeee9; --key: #fafaf7; --key-ink: #141414; --led: #3ddc84;
   --bad: #d92d20; --wait: #8a6d00;
   --sans: 'Archivo', system-ui, sans-serif;
@@ -2400,8 +3255,9 @@ put_file "$BRAIN/bin/web/app.css" 644 <<'__BRAIN_EOF__'
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --chassis: #1e1e1e; --panel: #292929; --ink: #ecebe6; --mute: #93928c; --line: #3e3e3d;
-    --acc: #ff5a1f; --acc-dk: #a8360c; --acc-ink: #fff; --acc2: #6b86ff;
+    --chassis: #1e1e1e; --panel: #292929; --ink: #ecebe6; --mute: #a8a7a1; --line: #3e3e3d;
+    --acc: #ff5a1f; --acc-dk: #a8360c; --acc-ink: #141414; --acc2: #6b86ff;
+    --acc-text: #ff7d4d; --bad-ink: #141414; --acc2-ink: #141414; --ok: #3ddc84; --warn: #ff9f1a;
     --disp: #0b0b0b; --disp-ink: #ffd23f; --key: #353534; --key-ink: #ecebe6; --led: #ffd23f;
     --bad: #ff6b5e; --wait: #e0b84a;
     color-scheme: dark;
@@ -2441,9 +3297,16 @@ button { cursor: pointer; }
 .led { width: 7px; height: 7px; border-radius: 50%; background: var(--led); }
 .led.is-off { background: var(--bad); }
 .display .error { color: #ff8a7a; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#counts { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.filter-chip { display: inline-block; margin-right: 10px; padding: 1px 6px; border-radius: 3px; background: var(--acc); color: var(--acc-ink); text-decoration: none; }
+.filter-chip:hover { color: var(--acc-ink); background: var(--acc-dk); }
+.capture-hint.is-low { color: var(--acc-text); opacity: 1; }
+.cap-remind { border-color: var(--acc-text); color: var(--acc-text); }
 
 /* ---------------------------------------------------------------- rail keys */
 .rail { display: flex; flex-direction: column; gap: 12px; }
+.rail-keys { display: flex; flex-direction: column; gap: 12px; }
+a.key { text-decoration: none; }
 .key {
   height: 62px; border-radius: 7px; border: 1px solid var(--line); background: var(--key); color: var(--key-ink);
   box-shadow: 0 3px 0 var(--line); display: flex; flex-direction: column; justify-content: space-between;
@@ -2454,8 +3317,12 @@ button { cursor: pointer; }
 .key-ink { height: 74px; background: var(--ink); color: var(--panel); border-color: transparent; }
 .key-top { display: flex; width: 100%; justify-content: space-between; align-items: center; }
 .key-k { font: 600 18px var(--mono); }
-.key-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc-ink); }
-.key-label { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.key-dot { width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+.key-dot.has { background: var(--acc); }
+.key.is-on .key-dot.has { background: var(--acc-ink); }
+.key-label { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; }
+.key-badge { font: 600 9px var(--mono); background: var(--acc); color: var(--acc-ink); border-radius: 8px; padding: 1px 5px; }
+.key.is-on .key-badge { background: var(--acc-ink); color: var(--acc); }
 
 /* ---------------------------------------------------------------- panel */
 .panel {
@@ -2463,7 +3330,7 @@ button { cursor: pointer; }
   box-shadow: inset 0 0 0 1px var(--line), inset 0 2px 6px rgba(0,0,0,.06);
 }
 .panel-head { display: flex; align-items: baseline; gap: 14px; padding: 22px 28px 18px; border-bottom: 1px solid var(--line); }
-.panel-num { font: 600 11px var(--mono); color: var(--acc); }
+.panel-num { font: 600 11px var(--mono); color: var(--acc-text); }
 .panel-head h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
 .panel-sub { font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -2492,11 +3359,11 @@ button { cursor: pointer; }
 .row-main { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .row-title { font-size: 16px; font-weight: 600; text-wrap: pretty; }
 .meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font: 500 10px var(--mono); color: var(--mute); letter-spacing: .04em; }
-.meta .proj { color: var(--acc); font-weight: 600; }
-.meta .due { color: var(--acc); font-weight: 600; }
+.meta .proj { color: var(--acc-text); font-weight: 600; }
+.meta .due { color: var(--acc-text); font-weight: 600; }
 .pill { font-weight: 600; letter-spacing: .1em; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--line); text-transform: uppercase; }
 .pill.active { background: var(--ink); color: var(--panel); border-color: var(--ink); }
-.pill.blocked { background: var(--bad); color: #fff; border-color: var(--bad); }
+.pill.blocked { background: var(--bad); color: var(--bad-ink); border-color: var(--bad); }
 .pill.waiting { color: var(--wait); border-color: currentColor; }
 .pill.done { color: var(--mute); }
 .empty { padding: 60px 8px; display: flex; flex-direction: column; gap: 8px; margin: 0; }
@@ -2505,7 +3372,7 @@ button { cursor: pointer; }
 
 /* ---------------------------------------------------------------- detail */
 .d-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.d-code { font: 600 11px var(--mono); color: var(--acc); }
+.d-code { font: 600 11px var(--mono); color: var(--acc-text); }
 .d-where { font: 500 11px var(--mono); color: var(--mute); }
 .d-title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
 .statuses { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
@@ -2531,9 +3398,9 @@ button { cursor: pointer; }
 .ck-box { width: 16px; height: 16px; flex: none; margin-top: 2px; border-radius: 3px; border: 1.5px solid var(--ink);
   display: flex; align-items: center; justify-content: center; font: 600 10px var(--mono); color: var(--panel); }
 .ck.is-done .ck-box { background: var(--ink); }
-.ck.is-done .ck-text { text-decoration: line-through; opacity: .5; }
+.ck.is-done .ck-text { text-decoration: line-through; opacity: .7; }
 .ck-due { font: 500 10px var(--mono); color: var(--mute); display: block; }
-.ck-due.is-due { color: var(--acc); font-weight: 600; }
+.ck-due.is-due { color: var(--acc-text); font-weight: 600; }
 .none { font: 500 11px var(--mono); color: var(--mute); padding: 6px 0; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 4px; box-shadow: 0 2px 0 var(--line);
@@ -2553,13 +3420,187 @@ span.chip { box-shadow: none; background: transparent; }
 .upd { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 7px 0; }
 .upd-who { display: flex; flex-direction: column; gap: 2px; font: 500 10px var(--mono); color: var(--mute); }
 .upd-who b { font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-.upd-who b.you { color: var(--acc); }
+.upd-who b.you { color: var(--acc-text); }
 .upd-who b.session { color: var(--acc2); }
 .upd-text { font-size: 14px; line-height: 1.45; text-wrap: pretty; overflow-wrap: anywhere; }
 
+/* ---------------------------------------------------------------- inbox */
+.btn-acc { flex: none; border: 1px solid transparent; background: var(--acc); color: var(--acc-ink); border-radius: 6px;
+  box-shadow: 0 3px 0 var(--acc-dk); font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 9px 14px; white-space: nowrap; }
+.btn-acc:active { transform: translateY(3px); box-shadow: none; }
+.btn-acc:disabled { opacity: .5; cursor: default; }
+.inbox { padding: 24px 28px; display: flex; flex-direction: column; gap: 22px; overflow: auto; flex: 1; }
+.capture { display: flex; gap: 10px; }
+.capture-field { flex: 1; min-width: 0; background: var(--disp); border-radius: 8px; display: flex; align-items: center; padding: 0 18px; gap: 14px; height: 66px; }
+.capture-field:focus-within { box-shadow: 0 0 0 2px var(--acc); }
+.capture-mark { font: 600 18px var(--mono); color: var(--acc); }
+.capture-field input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--disp-ink); font: 500 16px var(--mono); }
+.capture-field input::placeholder { color: inherit; opacity: .4; }
+.capture-hint { font: 500 10px var(--mono); letter-spacing: .1em; color: var(--disp-ink); opacity: .5; text-transform: uppercase; white-space: nowrap; }
+.capture-add { width: 66px; flex: none; border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 8px; box-shadow: 0 3px 0 var(--line); font: 600 11px var(--mono); }
+.capture-add:active { transform: translateY(3px); box-shadow: none; }
+.caps { list-style: none; margin: 0; padding: 0; }
+.cap { display: grid; grid-template-columns: 44px 58px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 15px 0; border-bottom: 1px dashed var(--line); }
+.cap-time { font: 500 11px var(--mono); color: var(--mute); }
+.cap-src { font: 600 9px var(--mono); letter-spacing: .1em; border: 1px solid var(--ink); border-radius: 3px; padding: 3px 0; text-align: center; }
+.cap-brain { border-color: var(--acc2); color: var(--acc2); }
+.cap-main { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; }
+.cap-text { font-size: 16px; text-wrap: pretty; overflow-wrap: anywhere; }
+.sugg { max-width: 100%; appearance: none; -webkit-appearance: none; border: 0; border-radius: 4px; padding: 4px 8px; cursor: pointer;
+  font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; text-overflow: ellipsis; }
+.sugg-log { background: var(--acc2); color: var(--acc2-ink); }
+.sugg-task { background: var(--acc); color: var(--acc-ink); }
+.sugg-remind { background: var(--ink); color: var(--panel); }
+.sugg-link { font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--acc2); text-decoration: none; }
+.sugg-link:hover { text-decoration: underline; color: var(--acc2); }
+.cap-actions { display: flex; gap: 6px; }
+.mini { width: 32px; height: 30px; border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 5px; box-shadow: 0 2px 0 var(--line); font: 600 13px var(--mono); padding: 0; }
+.mini:active { transform: translateY(2px); box-shadow: none; }
+.mini.ghost { background: transparent; color: var(--mute); box-shadow: none; }
+.notes { display: flex; flex-direction: column; gap: 4px; }
+
+/* ---------------------------------------------------------------- palette */
+.pal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.32); display: flex; justify-content: center; align-items: flex-start; padding: 90px 16px 16px; z-index: 10; }
+.pal { width: min(620px, 100%); background: var(--disp); color: var(--disp-ink); border-radius: 10px; box-shadow: 0 30px 60px -10px rgba(0,0,0,.5); overflow: hidden; }
+.pal-head { display: flex; align-items: center; gap: 12px; padding: 0 18px; height: 58px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.pal-mark { font: 600 16px var(--mono); color: var(--acc); }
+.pal-head input { flex: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--disp-ink); font: 500 15px var(--mono); }
+.pal-head input::placeholder { color: inherit; opacity: .45; }
+.pal-esc { font: 500 10px var(--mono); opacity: .6; }
+.pal-list { list-style: none; margin: 0; padding: 6px; max-height: min(400px, 60vh); overflow: auto; }
+.pal-item { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 12px; border-radius: 6px; cursor: pointer; font: 500 13px var(--mono); }
+.pal-item[aria-selected="true"] { background: var(--acc); color: var(--acc-ink); }
+.pal-type { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; opacity: .7; }
+.pal-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-hint { font-size: 10px; opacity: .65; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-none { padding: 14px 12px; font: 500 12px var(--mono); opacity: .7; }
+
+/* ---------------------------------------------------------------- ask */
+.msgs { flex: 1; overflow: auto; padding: 24px 28px; display: flex; flex-direction: column; gap: 22px; }
+.msgs .day { border: 0; padding: 0; }
+.msg { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; max-width: 860px; }
+.msg-who { display: flex; flex-direction: column; gap: 3px; font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; padding-top: 4px; }
+.msg-who.you { color: var(--acc-text); }
+.msg-who.brain { color: var(--acc2); }
+.msg-who.err { color: var(--bad); }
+.msg-at { font-weight: 500; color: var(--mute); letter-spacing: 0; }
+.msg-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.msg-text { margin: 0; font-size: 16px; line-height: 1.5; text-wrap: pretty; white-space: pre-line; overflow-wrap: anywhere; }
+.msg-text.is-q { font-size: 20px; font-weight: 700; letter-spacing: -.01em; line-height: 1.3; }
+.thinking { color: var(--mute); font: 500 13px var(--mono); }
+.md { display: flex; flex-direction: column; gap: 8px; }
+.md p { margin: 0; }
+.md-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.md code { font: 500 .88em var(--mono); background: var(--key); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+button.chip:disabled { opacity: .5; cursor: default; }
+.cursor { margin-left: 4px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.ask-foot { padding: 16px 28px 22px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
+.ask-field { height: 58px; }
+.chip { cursor: pointer; }
+button.chip { font: 500 11px var(--mono); }
+.capture-add.send { width: 76px; background: var(--acc); color: var(--acc-ink); border-color: transparent; box-shadow: 0 3px 0 var(--acc-dk); }
+.capture-add:disabled { opacity: .5; cursor: default; }
+
+/* ---------------------------------------------------------------- projects */
+.proj-grid { flex: 1; overflow: auto; padding: 22px 28px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; align-content: start; }
+.pcol { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pcol-head { margin: 0; display: flex; justify-content: space-between; gap: 8px; font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; border-bottom: 2px solid var(--ink); padding-bottom: 8px; }
+.pcol-n { color: var(--mute); }
+.pcard { display: flex; flex-direction: column; gap: 10px; text-decoration: none; border: 1px solid var(--line); background: var(--key); color: var(--key-ink);
+  border-radius: 7px; box-shadow: 0 3px 0 var(--line); padding: 14px; transition: transform var(--fast), box-shadow var(--fast); }
+.pcard:hover { border-color: var(--ink); color: var(--key-ink); }
+.pcard:active { transform: translateY(3px); box-shadow: none; }
+.pcard-top { display: flex; justify-content: space-between; gap: 8px; font: 600 10px var(--mono); }
+.pcard-id { color: var(--acc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard-n { color: var(--mute); white-space: nowrap; }
+.pcard-id.is-unfiled { color: var(--mute); }
+.pcard-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.pcard-meta { font: 500 10px var(--mono); color: var(--mute); }
+.segs { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
+.seg { height: 6px; border-radius: 1px; background: var(--line); }
+.seg-done { background: var(--acc); }
+.seg-active { background: var(--ink); }
+.seg-waiting { background: var(--wait); }
+.seg-blocked { background: var(--bad); }
+
+/* ---------------------------------------------------------------- system */
+.sys { flex: 1; overflow: auto; padding: 22px 28px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 28px; align-content: start; }
+.sys-col { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.label.rule { color: var(--ink); border-bottom: 2px solid var(--ink); padding-bottom: 8px; }
+.checklist { list-style: none; margin: 0; padding: 0; }
+.chk { display: grid; grid-template-columns: 22px 118px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px dashed var(--line); font: 500 12px var(--mono); }
+.chk-label { font-weight: 600; }
+.chk-detail { color: var(--mute); overflow-wrap: anywhere; }
+.dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); }
+.dot-ok { background: var(--ok); }
+.dot-warn { background: var(--warn); }
+.dot-bad { background: var(--bad); }
+.setting { display: flex; align-items: center; gap: 14px; padding: 4px 0; }
+.setting-text { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.setting-text span { font: 500 11px var(--mono); color: var(--mute); }
+.switch { width: 62px; height: 30px; flex: none; border-radius: 4px; border: 1px solid var(--line); background: var(--line); position: relative; padding: 0; }
+.switch.is-on { background: var(--acc); }
+.switch-knob { position: absolute; top: 3px; left: 3px; width: 26px; height: 22px; border-radius: 3px; background: var(--key); box-shadow: 0 1px 0 var(--line); transition: transform .15s; }
+.switch.is-on .switch-knob { transform: translateX(30px); }
+.seg-keys { display: grid; grid-template-columns: repeat(3, 76px); gap: 6px; }
+.facts-4 { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 14px; }
+.big { background: var(--disp); color: var(--disp-ink); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
+.big .label { color: inherit; opacity: .65; }
+.big-n { font: 500 76px var(--mono); letter-spacing: -.05em; line-height: 1; }
+.big-sub { font: 500 11px var(--mono); opacity: .7; }
+.meter { display: flex; flex-direction: column; gap: 8px; }
+.meter-head { display: flex; justify-content: space-between; font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.meter-v { color: var(--mute); }
+.meter-segs { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; }
+.mseg { height: 18px; border-radius: 2px; background: color-mix(in srgb, var(--acc) calc(var(--lvl) * 100%), var(--line)); }
+.meter-axis { display: flex; justify-content: space-between; font: 500 9px var(--mono); color: var(--mute); }
+.ticks { list-style: none; margin: 0; padding: 0; font: 500 11px var(--mono); }
+.ticks li { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.tick-at { color: var(--mute); }
+.tick-r { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- graph */
+.graph { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
+.graph-canvas { position: relative; min-height: 420px; overflow: hidden; border-right: 1px solid var(--line);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px; }
+.graph-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.edge { stroke: var(--mute); stroke-width: 1; opacity: .55; }
+.edge-session { stroke-dasharray: 4 4; }
+.edge-decision { stroke: var(--acc2); }
+.edge.is-hot { stroke: var(--acc); stroke-width: 2; opacity: 1; }
+.gnode { position: absolute; transform: translate(-50%, -50%); border: 0; background: transparent; padding: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink); transition: opacity var(--fast); }
+.gnode.is-far { opacity: .45; }
+.gdot { display: block; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--key); }
+.gnode-project .gdot { background: var(--ink); }
+.gnode-task.st-active .gdot { background: var(--acc); }
+.gnode-task.st-blocked .gdot { background: var(--bad); }
+.gnode-task.st-waiting .gdot { background: var(--warn); }
+.gnode-decision .gdot { background: var(--acc2); border-radius: 3px; }
+.gnode.is-picked .gdot { box-shadow: 0 0 0 4px var(--panel), 0 0 0 6px var(--ink); }
+.glabel { font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel); padding: 1px 4px;
+  white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.graph-side { padding: 24px; display: flex; flex-direction: column; gap: 12px; overflow: auto; min-width: 0; }
+.gside-kind { color: var(--acc-text); }
+.gside-title { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
+.glinks { display: flex; flex-direction: column; gap: 6px; }
+.glink { text-align: left; border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 5px;
+  box-shadow: 0 2px 0 var(--line); font: 500 12px var(--mono); padding: 8px 10px; overflow-wrap: anywhere; }
+.glink:hover { border-color: var(--ink); }
+.gside-open { display: block; text-align: center; padding: 10px; text-decoration: none; }
+.graph-side .btn-acc { padding: 12px; }
+
 /* ---------------------------------------------------------------- responsive */
+@media (max-width: 1100px) {
+  .graph { grid-template-columns: 1fr; }
+  .graph-canvas { border-right: 0; border-bottom: 1px solid var(--line); min-height: 380px; }
+  .proj-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sys { grid-template-columns: 1fr; }
+}
 @media (max-width: 980px) {
   .frame { height: auto; min-height: calc(100vh - 48px); }
+  .msgs { min-height: 50vh; }
   .today { grid-template-columns: 1fr; }
   .detail { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
   .list { overflow: visible; }
@@ -2571,8 +3612,18 @@ span.chip { box-shadow: none; background: transparent; }
   .topbar { flex-direction: column; gap: 8px; }
   .brand { width: auto; flex-direction: row; align-items: baseline; gap: 10px; }
   .display { height: 36px; gap: 14px; }
-  .rail { flex-direction: row; }
-  .rail .key { flex: 1; height: 48px; }
+  .rail { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .rail-keys { display: contents; }
+  #clock { display: none; }
+  .msg { grid-template-columns: 1fr; gap: 6px; }
+  .msgs, .proj-grid, .sys { padding: 16px; }
+  .ask-foot { padding: 12px 16px 16px; }
+  .proj-grid { grid-template-columns: 1fr; }
+  .chk { grid-template-columns: 22px minmax(0, 1fr); }
+  .chk-detail { grid-column: 2; }
+  .seg-keys { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .setting { flex-wrap: wrap; }
+  .rail .key { height: 48px; min-width: 0; }
   .rail .spacer { display: none; }
   .panel-head { padding: 18px 16px 14px; flex-wrap: wrap; }
   .list { padding: 4px 8px 12px; }
@@ -2580,6 +3631,14 @@ span.chip { box-shadow: none; background: transparent; }
   .row { grid-template-columns: 30px minmax(0, 1fr); }
   .row-time { display: none; }
   .statuses { grid-template-columns: repeat(2, 1fr); }
+  .inbox { padding: 16px; }
+  .capture-field { height: 54px; padding: 0 12px; }
+  .capture-hint { display: none; }
+  .cap { grid-template-columns: 50px minmax(0, 1fr); gap: 10px; }
+  .cap-actions { grid-column: 2; }
+  .sugg { white-space: normal; text-align: left; }
+  .cap-time { display: none; }
+  .panel-head .btn-acc { padding: 7px 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
@@ -2587,27 +3646,138 @@ span.chip { box-shadow: none; background: transparent; }
 }
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/app.js" 644 <<'__BRAIN_EOF__'
-// Second Brain: Today screen. Talks to `brain serve` on 127.0.0.1.
-// Everything from the brain is inserted as text (never as HTML).
-'use strict';
+// Second Brain page: router, rail keys, ⌘K, polling. Views live in their own modules.
+import { $, el, store, load, isTyping, POLL_MS } from './core.js';
+import * as inbox from './inbox.js';
+import * as today from './today.js';
+import * as ask from './ask.js';
+import * as graph from './graph.js';
+import * as projects from './projects.js';
+import * as system from './system.js';
+import * as palette from './palette.js';
 
-const TOKEN = document.querySelector('meta[name="brain-token"]').content;
-const POLL_MS = 10000;
-const STATUSES = ['active', 'waiting', 'blocked', 'done'];
-const ORDER = { blocked: 0, active: 1, waiting: 2, done: 3 };
-const $ = (id) => document.getElementById(id);
+// Numbers follow the design (07 meet is not built).
+const VIEWS = [
+  { id: 'inbox', k: '1', label: 'Inbox', mod: inbox, badge: (d) => inbox.inboxCount(d) },
+  { id: 'today', k: '2', label: 'Today', mod: today, badge: (d) => today.dueCount(d) },
+  { id: 'ask', k: '3', label: 'Ask', mod: ask, badge: () => 0 },
+  { id: 'graph', k: '4', label: 'Graph', mod: graph, badge: () => 0 },
+  { id: 'projects', k: '5', label: 'Projects', mod: projects, badge: () => 0 },
+  { id: 'system', k: '6', label: 'System', mod: system, badge: () => 0 },
+];
+const DEFAULT = 'today';
+let current = null;
+let deferred = false;
 
-let data = null;
-let lastJson = '';
-let selected = decodeURIComponent(location.hash.slice(1)) || null;
-let busy = false;
+// "#today/slug", "#inbox"; a bare "#slug" (older links) means today/slug.
+function parseHash() {
+  let raw = '';
+  try {
+    raw = decodeURIComponent(location.hash.slice(1));
+  } catch (e) {
+    raw = '';   // malformed escape: fall back to the default view
+  }
+  const [head, ...rest] = raw.split('/');
+  const view = VIEWS.find((v) => v.id === head);
+  if (view) return { view, param: rest.join('/') || null };
+  return { view: VIEWS.find((v) => v.id === DEFAULT), param: raw || null };
+}
 
-// ---------------------------------------------------------------- helpers
-function el(tag, attrs, ...kids) {
+function route() {
+  const { view, param } = parseHash();
+  if (current !== view) {
+    if (current && current.mod.unmount) current.mod.unmount();
+    current = view;
+    view.mod.mount($('panel'), param);
+    renderRail();
+  } else if (param && view.mod.mount.length > 1) {
+    view.mod.mount($('panel'), param);
+  }
+  if (store.data) view.mod.update();
+}
+
+function renderRail() {
+  const keys = VIEWS.map((v) => {
+    const on = v === current;
+    const badge = store.data ? v.badge(store.data) : 0;
+    return el('a', {
+      class: 'key' + (on ? ' is-on' : ''), href: '#' + v.id, 'aria-current': on ? 'page' : null,
+      'aria-label': v.label + (badge ? ' (' + badge + ')' : '') + ', key ' + v.k,
+    },
+      el('span', { class: 'key-top' }, el('span', { class: 'key-k' }, v.k),
+        badge ? el('span', { class: 'key-badge' }, String(badge)) : el('span', { class: 'key-dot' })),
+      el('span', { class: 'key-label' }, v.label));
+  });
+  $('rail-keys').replaceChildren(...keys);
+}
+
+function renderStatus() {
+  const d = store.data;
+  const open = d.tasks.filter((t) => t.status !== 'done').length;
+  $('counts').textContent = open + ' open · ' + today.dueCount(d) + ' due · ' + inbox.inboxCount(d) + ' in';
+}
+
+function render() {
+  renderStatus();
+  renderRail();
+  current.mod.update();
+}
+
+// A poll must not close a dropdown the owner has open: wait until it loses focus.
+store.onChange = () => {
+  if ((document.activeElement || {}).tagName === 'SELECT') deferred = true;
+  else render();
+};
+document.addEventListener('focusout', (e) => {
+  if (deferred && e.target.tagName === 'SELECT') {
+    deferred = false;
+    setTimeout(render, 0);
+  }
+});
+
+window.addEventListener('hashchange', route);
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (palette.isOpen()) palette.close(); else palette.open();
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey || isTyping() || palette.isOpen()) return;
+  if (e.key === '/') { e.preventDefault(); palette.open(); return; }
+  const v = VIEWS.find((x) => x.k === e.key);
+  if (v) location.hash = '#' + v.id;
+});
+$('search-key').addEventListener('click', () => palette.open());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+
+palette.init(VIEWS, (q) => ask.askNow(q));
+
+function tickClock() {
+  $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+tickClock();
+setInterval(tickClock, 15000);
+setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
+route();
+load();
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/core.js" 644 <<'__BRAIN_EOF__'
+// Shared helpers for the Second Brain page: DOM building, API calls, time
+// formatting. Everything from the brain is inserted as text, never as HTML.
+
+export const TOKEN = document.querySelector('meta[name="brain-token"]').content;
+export const POLL_MS = 10000;
+export const $ = (id) => document.getElementById(id);
+
+export const store = { data: null, lastJson: '', queue: Promise.resolve(), onChange: () => {} };
+
+export function el(tag, attrs, ...kids) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v === null || v === undefined || v === false) continue;
     if (k === 'class') n.className = v;
+    // Styles go through the CSSOM: the page's CSP forbids style attributes.
+    else if (k === 'style') for (const [prop, val] of Object.entries(v)) n.style.setProperty(prop, val);
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
     else n.setAttribute(k, v === true ? '' : v);
   }
@@ -2618,30 +3788,20 @@ function el(tag, attrs, ...kids) {
   return n;
 }
 
-const day = (ts) => (ts || '').slice(0, 10);
-const hm = (ts) => (ts || '').slice(11, 16);
-function shortWhen(ts) {
+// ---------------------------------------------------------------- time
+export const day = (ts) => (ts || '').slice(0, 10);
+export const hm = (ts) => (ts || '').slice(11, 16);
+export function shortWhen(ts) {
   if (!ts) return '—';
-  return day(ts) === day(data.now) ? hm(ts) : ts.slice(5, 10) + ' ' + hm(ts);
+  return day(ts) === day(store.data.now) ? hm(ts) : ts.slice(5, 10) + ' ' + hm(ts);
 }
-function dayLabel(d) {
+export function dayLabel(d) {
   const dt = new Date(d + 'T12:00');
   return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
 }
-const openFollowups = (t) => t.followups.filter((f) => !f.done).sort((a, b) => a.due.localeCompare(b.due));
-const isDue = (f) => !f.done && f.due <= data.now;
-const sortedTasks = () => [...data.tasks].sort((a, b) =>
-  (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || b.updated.localeCompare(a.updated));
-
-function whoOf(source) {
-  if (source === 'you') return { label: 'you', cls: 'you', sub: '' };
-  const m = /^session (\S+)(?: \((.*)\))?$/.exec(source);
-  if (m) return { label: 'session', cls: 'session', sub: m[1] + (m[2] ? ' · ' + m[2] : '') };
-  return { label: source || 'note', cls: 'bg', sub: '' };
-}
 
 // ---------------------------------------------------------------- api
-async function api(path, body) {
+export async function api(path, body) {
   const opt = { headers: { 'X-Brain-Token': TOKEN } };
   if (body !== undefined) {
     opt.method = 'POST';
@@ -2655,7 +3815,7 @@ async function api(path, body) {
   return j;
 }
 
-function setStatusLine(ok, message) {
+export function setStatusLine(ok, message) {
   $('led').classList.toggle('is-off', !ok);
   $('conn').textContent = ok ? 'local · live' : 'offline';
   const err = $('error');
@@ -2663,68 +3823,190 @@ function setStatusLine(ok, message) {
   err.textContent = message || '';
 }
 
-async function load() {
+function accept(next) {
+  const json = JSON.stringify(next);
+  if (json === store.lastJson) return;
+  store.lastJson = json;
+  store.data = next;
+  store.onChange();
+}
+
+export async function load(force) {
+  if (force) store.lastJson = '';
   try {
     const next = await api('api/state');
-    const json = JSON.stringify(next);
     setStatusLine(true, '');
-    if (json === lastJson) return;
-    lastJson = json;
-    data = next;
-    render();
+    accept(next);
   } catch (e) {
     setStatusLine(false, 'brain serve not reachable: ' + e.message);
   }
 }
 
-async function act(path, body) {
-  if (busy) return false;
-  busy = true;
-  try {
-    const j = await api(path, body);
-    data = j.state;
-    lastJson = JSON.stringify(data);
-    setStatusLine(true, '');
-    render();
-    return true;
-  } catch (e) {
-    setStatusLine(true, e.message);
-    return false;
-  } finally {
-    busy = false;
-  }
+// POST an action; on success the reply carries the new state. Actions run one
+// at a time in click order, so quick clicks are queued rather than dropped.
+export function act(path, body) {
+  const run = async () => {
+    try {
+      const j = await api(path, body);
+      setStatusLine(true, '');
+      accept(j.state);
+      return true;
+    } catch (e) {
+      setStatusLine(true, e.message);
+      return false;
+    }
+  };
+  const p = store.queue.then(run);
+  store.queue = p.catch(() => false);
+  return p;
 }
 
-const taskPath = (slug, what) => 'api/tasks/' + encodeURIComponent(slug) + '/' + what;
-const setStatus = (slug, status) => act(taskPath(slug, 'status'), { status });
+// Re-render without losing keyboard focus. Elements carry data-fk keys
+// ("ok:<id>"): the element with the same key gets focus back. If it is gone or
+// disabled (an accepted capture, a ticked follow-up), focus goes to the element
+// of the same kind now at its place, else to `fallback` (a selector).
+export function keepFocus(render, fallback) {
+  const cur = document.activeElement;
+  const key = cur && cur.dataset ? cur.dataset.fk : null;
+  const kind = key ? key.split(':')[0] + ':' : '';
+  const sameKind = () => [...document.querySelectorAll('[data-fk^="' + CSS.escape(kind) + '"]')];
+  const index = key ? sameKind().indexOf(cur) : -1;
+  render();
+  if (!key || (document.activeElement && document.activeElement !== document.body)) return;
+  const usable = (n) => n && !n.disabled && n.isConnected;
+  let n = document.querySelector('[data-fk="' + CSS.escape(key) + '"]');
+  if (!usable(n)) {
+    const peers = sameKind().filter(usable);
+    n = peers[Math.min(Math.max(index, 0), peers.length - 1)];
+  }
+  if (!usable(n) && fallback) n = document.querySelector(fallback);
+  if (usable(n)) n.focus({ preventScroll: true });
+}
 
-// ---------------------------------------------------------------- render
+export const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+export const taskPath = (slug, what) => 'api/tasks/' + encodeURIComponent(slug) + '/' + what;
+export const taskTitle = (slug) => (store.data.tasks.find((t) => t.slug === slug) || {}).title || slug;
+export const isTyping = () => ['INPUT', 'TEXTAREA', 'SELECT'].includes((document.activeElement || {}).tagName);
+
+export function panelHead(num, title, subId) {
+  return el('div', { class: 'panel-head' },
+    el('span', { class: 'panel-num' }, num),
+    el('h1', { id: 'view-heading' }, title),
+    el('span', { class: 'panel-sub', id: subId }));
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/today.js" 644 <<'__BRAIN_EOF__'
+// Today: open tasks (and those finished today) with a detail pane.
+import { $, el, store, act, taskPath, shortWhen, day, hm, dayLabel, panelHead, keepFocus, reducedMotion, POLL_MS } from './core.js';
+
+const STATUSES = ['active', 'waiting', 'blocked', 'done'];
+const ORDER = { blocked: 0, active: 1, waiting: 2, done: 3 };
+let selected = null;
+let project = null;   // "#today/@name" shows one project's tasks
+let explicit = false; // the selection came from a link (#today/<slug>)
+
+const openFollowups = (t) => t.followups.filter((f) => !f.done).sort((a, b) => a.due.localeCompare(b.due));
+const isDue = (f) => !f.done && f.due <= store.data.now;
+const setStatus = (slug, status) => act(taskPath(slug, 'status'), { status });
+export const dueCount = (data) => data.tasks.reduce((n, t) => n + t.followups.filter((f) => !f.done && f.due <= data.now).length, 0);
+
+function whoOf(source) {
+  if (source === 'you') return { label: 'you', cls: 'you', sub: '' };
+  const m = /^session (\S+)(?: \((.*)\))?$/.exec(source);
+  if (m) return { label: 'session', cls: 'session', sub: m[1] + (m[2] ? ' · ' + m[2] : '') };
+  return { label: source || 'note', cls: 'bg', sub: '' };
+}
+
+export function mount(panel, param) {
+  if (param && param.startsWith('@')) project = param.slice(1) || null;
+  else if (param) { selected = param; explicit = true; }
+  panel.replaceChildren(
+    panelHead('02', 'today', 'sub'),
+    el('div', { class: 'today' },
+      el('section', { class: 'list', 'aria-label': 'Tasks' },
+        el('ul', { id: 'tasks', class: 'rows' }),
+        el('p', { id: 'empty', class: 'empty', hidden: true },
+          el('span', { class: 'empty-big' }, 'nothing open.'),
+          el('span', { class: 'empty-sub' }, 'tasks appear here when a claude session starts real work'))),
+      el('section', { class: 'detail', id: 'detail', 'aria-label': 'Task detail', hidden: true },
+        el('div', { id: 'detail-body' }),
+        el('div', { class: 'block' },
+          el('h2', { class: 'label' }, 'updates'),
+          el('form', { class: 'composer', id: 'composer', onsubmit: postUpdate },
+            el('label', { class: 'sr-only', for: 'upd' }, 'Post an update'),
+            el('input', { id: 'upd', name: 'upd', autocomplete: 'off', maxlength: '300', placeholder: 'post an update…' }),
+            el('button', { type: 'submit', class: 'btn-key' }, 'POST')),
+          el('ol', { class: 'updates', id: 'updates' })))));
+}
+
+async function postUpdate(e) {
+  e.preventDefault();
+  const input = $('upd');
+  const text = input.value.trim();
+  if (!text || !selected) return;
+  const button = e.target.querySelector('button');
+  button.disabled = true;
+  if (await act(taskPath(selected, 'log'), { text })) input.value = '';
+  button.disabled = false;
+  input.focus();
+}
+
+const inProject = (t) => !project || (t.project || 'unfiled') === project;
+const sortedTasks = () => store.data.tasks.filter(inProject).sort((a, b) =>
+  (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || b.updated.localeCompare(a.updated));
+
+export function update() {
+  keepFocus(render, '#upd');
+}
+
 function render() {
+  if (explicit) {
+    explicit = false;
+    const t = store.data.tasks.find((x) => x.slug === selected);
+    if (t && !inProject(t)) project = null;
+  }
   const tasks = sortedTasks();
-  if (!tasks.some((t) => t.slug === selected)) selected = tasks.length ? tasks[0].slug : null;
+  if (!tasks.some((t) => t.slug === selected)) {
+    selected = tasks.length ? tasks[0].slug : null;
+    // A link to a task that is gone: show the URL of what is actually shown.
+    if (location.hash.startsWith('#today')) history.replaceState(null, '', selected ? '#today/' + encodeURIComponent(selected) : '#today');
+  }
   const open = tasks.filter((t) => t.status !== 'done').length;
-  const due = tasks.reduce((n, t) => n + t.followups.filter(isDue).length, 0);
-  $('counts').textContent = open + ' open · ' + due + ' due';
-  $('sub').textContent = (tasks.length - open) + '/' + tasks.length + ' done · ' + dayLabel(day(data.now)) +
-    ' · refreshes every ' + POLL_MS / 1000 + 's';
+  $('sub').replaceChildren(
+    project ? el('a', { class: 'filter-chip', href: '#today/@', 'aria-label': 'Show all projects' }, project + ' ×') : '',
+    (tasks.length - open) + '/' + tasks.length + ' done · ' + dayLabel(day(store.data.now)) +
+    ' · refreshes every ' + POLL_MS / 1000 + 's');
   $('tasks').replaceChildren(...tasks.map(row));
   $('empty').hidden = tasks.length > 0;
   renderDetail(tasks.find((t) => t.slug === selected));
 }
 
+function select(slug) {
+  selected = slug;
+  history.replaceState(null, '', '#today/' + encodeURIComponent(slug));
+  update();
+  // On narrow screens the detail sits below the list: bring it into view.
+  if (window.matchMedia('(max-width: 980px)').matches) {
+    $('detail').scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  }
+}
+
 function row(t) {
   const done = t.status === 'done';
   const next = openFollowups(t)[0];
-  const select = () => { selected = t.slug; history.replaceState(null, '', '#' + encodeURIComponent(t.slug)); render(); };
   return el('li', {
     class: 'row' + (t.slug === selected ? ' is-sel' : '') + (done ? ' is-done' : ''),
-    tabindex: '0', 'aria-current': t.slug === selected ? 'true' : null,
-    onclick: select,
-    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } },
+    tabindex: '0', 'aria-current': t.slug === selected ? 'true' : null, 'data-fk': 'row:' + t.slug,
+    onclick: () => select(t.slug),
+    onkeydown: (e) => {
+      if (e.target !== e.currentTarget) return;   // keys on the check button are the button's
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(t.slug); }
+    },
   },
     el('span', { class: 'row-time' }, shortWhen(t.updated)),
     el('button', {
-      class: 'check' + (done ? ' is-on' : ''), type: 'button',
+      class: 'check' + (done ? ' is-on' : ''), type: 'button', 'data-fk': 'check:' + t.slug,
       'aria-label': done ? 'Reopen ' + t.title : 'Mark ' + t.title + ' done',
       onclick: (e) => { e.stopPropagation(); setStatus(t.slug, done ? 'active' : 'done'); },
     }, done ? '✓' : ''),
@@ -2750,7 +4032,7 @@ function renderDetail(t) {
     el('h2', { class: 'd-title' }, t.title || t.slug),
     el('div', { class: 'statuses', role: 'group', 'aria-label': 'Status' },
       STATUSES.map((s) => el('button', {
-        class: 'st', type: 'button', 'aria-pressed': String(t.status === s),
+        class: 'st', type: 'button', 'aria-pressed': String(t.status === s), 'data-fk': 'st:' + s,
         onclick: () => { if (t.status !== s) setStatus(t.slug, s); },
       }, s))),
     el('dl', { class: 'facts' },
@@ -2762,7 +4044,7 @@ function renderDetail(t) {
     t.next && el('div', { class: 'next' }, el('span', { class: 'label' }, 'next'), el('p', {}, t.next)),
     el('div', { class: 'block' },
       el('h3', { class: 'label' }, 'follow-ups · ' + openFollowups(t).length + ' open'),
-      fus.length ? el('ul', { class: 'checks' }, fus.map((f) => followup(f))) : el('span', { class: 'none' }, 'none')),
+      fus.length ? el('ul', { class: 'checks' }, fus.map(followup)) : el('span', { class: 'none' }, 'none')),
     el('div', { class: 'block' },
       el('h3', { class: 'label' }, 'links'),
       (t.tickets.length + t.sessions.length) ? el('div', { class: 'chips' },
@@ -2776,7 +4058,7 @@ function followup(f) {
   const due = isDue(f);
   return el('li', {},
     el('button', {
-      class: 'ck' + (f.done ? ' is-done' : ''), type: 'button', disabled: f.done,
+      class: 'ck' + (f.done ? ' is-done' : ''), type: 'button', disabled: f.done, 'data-fk': 'fu:' + f.id,
       'aria-label': f.done ? 'Done: ' + f.what : 'Tick off: ' + f.what,
       onclick: () => act('api/followups/' + encodeURIComponent(f.id) + '/done', { result: 'done (ticked on the page)' }),
     },
@@ -2809,30 +4091,749 @@ function renderUpdates(t) {
   }
   $('updates').replaceChildren(...items);
 }
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/inbox.js" 644 <<'__BRAIN_EOF__'
+// Inbox: capture quick notes, accept or change where Rami suggests they go,
+// tick off reminders that belong to no task, and clear the brain's messages.
+import { $, el, store, act, hm, day, dayLabel, shortWhen, taskTitle, keepFocus } from './core.js';
 
-// ---------------------------------------------------------------- wiring
-$('composer').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = $('upd');
-  const text = input.value.trim();
-  if (!text || !selected) return;
-  const button = e.target.querySelector('button');
-  button.disabled = true;
-  if (await act(taskPath(selected, 'log'), { text })) input.value = '';
-  button.disabled = false;
-  input.focus();
-});
-$('refresh').addEventListener('click', () => { lastJson = ''; load(); });
-window.addEventListener('hashchange', () => { selected = decodeURIComponent(location.hash.slice(1)); if (data) render(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+const TEXT_MAX = 300;
+const capPath = (id, what) => 'api/captures/' + encodeURIComponent(id) + '/' + what;
+export const inboxCount = (data) => data.captures.length + data.notes.length + data.reminders.length;
 
-function tickClock() {
-  $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+export function mount(panel) {
+  panel.replaceChildren(
+    el('div', { class: 'panel-head' },
+      el('span', { class: 'panel-num' }, '01'),
+      el('h1', { id: 'view-heading' }, 'inbox'),
+      el('span', { class: 'panel-sub', id: 'inbox-sub' }),
+      el('span', { class: 'spacer' }),
+      el('button', { class: 'btn-acc', type: 'button', id: 'process-all', onclick: processAll }, 'process all ↵')),
+    el('div', { class: 'inbox' },
+      el('form', { class: 'capture', onsubmit: capture },
+        el('div', { class: 'capture-field' },
+          el('span', { class: 'capture-mark', 'aria-hidden': 'true' }, '›'),
+          el('label', { class: 'sr-only', for: 'cap' }, 'Capture a note'),
+          el('input', { id: 'cap', autocomplete: 'off', maxlength: String(TEXT_MAX), placeholder: 'capture a task, idea or link…', oninput: countdown }),
+          el('span', { class: 'capture-hint', id: 'cap-hint', 'aria-live': 'polite' }, 'enter to file')),
+        el('button', { type: 'submit', class: 'capture-add' }, 'ADD')),
+      el('ul', { class: 'caps', id: 'caps', 'aria-label': 'Unsorted captures' }),
+      section('reminders-wrap', 'reminders · no task', 'reminders'),
+      section('notes-wrap', 'from the brain', 'notes'),
+      el('p', { class: 'empty', id: 'inbox-empty', hidden: true },
+        el('span', { class: 'empty-big' }, 'inbox zero.'),
+        el('span', { class: 'empty-sub' }, 'tasks went to today · notes went to their task logs'))));
+  $('cap').focus();
 }
-tickClock();
-setInterval(tickClock, 15000);
-setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
-load();
+
+function section(wrapId, title, listId) {
+  return el('section', { class: 'notes', id: wrapId, 'aria-labelledby': listId + '-h' },
+    el('h2', { class: 'label', id: listId + '-h' }, title),
+    el('ul', { class: 'caps', id: listId }));
+}
+
+function countdown() {
+  const left = TEXT_MAX - $('cap').value.length;
+  $('cap-hint').textContent = left <= 50 ? left + ' left' : 'enter to file';
+  $('cap-hint').classList.toggle('is-low', left <= 50);
+}
+
+async function capture(e) {
+  e.preventDefault();
+  const input = $('cap');
+  const text = input.value.trim();
+  if (!text) return;
+  if (await act('api/captures', { text })) input.value = '';
+  countdown();
+  input.focus();
+}
+
+// Accept every capture. Unless the owner picked a destination, the server
+// decides at accept time, so an earlier accept (say, a new task) is taken into
+// account for the next one.
+async function processAll() {
+  const button = $('process-all');
+  button.disabled = true;
+  for (const c of [...store.data.captures]) {
+    if (!(await act(capPath(c.id, 'accept'), picked.has(c.id) ? choiceBody(c) : {}))) break;
+  }
+  button.disabled = false;
+}
+
+const picked = new Map();
+const choiceOf = (c) => picked.get(c.id) || c.kind + ':' + c.dest;
+function choiceBody(c) {
+  const [kind, dest] = choiceOf(c).split(':');
+  return { kind, dest: dest || '' };
+}
+
+const whenLabel = (when) => (when ? dayLabel(day(when)) + ' ' + hm(when) : 'next workday');
+const remindLabel = (dest, when) => 'reminder · ' + whenLabel(when) + ' · ' + (dest ? taskTitle(dest) : 'no task');
+function choiceLabel(kind, dest, when) {
+  if (kind === 'log') return 'log · ' + taskTitle(dest);
+  if (kind === 'task') return 'new task · ' + dest;
+  return remindLabel(dest, when);
+}
+
+function choiceSelect(c) {
+  const open = store.data.tasks.filter((t) => t.status !== 'done');
+  const opts = [
+    ['task:' + (c.kind === 'task' ? c.dest : ''), c.kind === 'task' ? choiceLabel('task', c.dest) : 'new task'],
+    ['remind:' + (c.kind === 'remind' ? c.dest : ''), remindLabel(c.kind === 'remind' ? c.dest : '', c.when)],
+    ...open.map((t) => ['log:' + t.slug, 'log · ' + (t.title || t.slug)]),
+  ];
+  const current = choiceOf(c);
+  if (!opts.some(([v]) => v === current)) opts.unshift([current, choiceLabel(...current.split(':'), c.when)]);
+  const sel = el('select', {
+    class: 'sugg sugg-' + current.split(':')[0], 'aria-label': 'Where "' + c.text + '" goes', 'data-fk': 'sel:' + c.id,
+    onchange: (e) => { picked.set(c.id, e.target.value); e.target.className = 'sugg sugg-' + e.target.value.split(':')[0]; },
+  }, opts.map(([v, label]) => el('option', { value: v }, '→ ' + label)));
+  sel.value = current;
+  return sel;
+}
+
+function capRow(c) {
+  return el('li', { class: 'cap' },
+    el('span', { class: 'cap-time' }, hm(c.at)),
+    el('span', { class: 'cap-src' }, c.src),
+    el('div', { class: 'cap-main' }, el('span', { class: 'cap-text' }, c.text), choiceSelect(c)),
+    el('div', { class: 'cap-actions' },
+      el('button', { class: 'mini', type: 'button', title: 'Accept', 'aria-label': 'Accept: ' + c.text, 'data-fk': 'ok:' + c.id,
+        onclick: () => act(capPath(c.id, 'accept'), choiceBody(c)) }, '✓'),
+      el('button', { class: 'mini ghost', type: 'button', title: 'Dismiss', 'aria-label': 'Dismiss: ' + c.text, 'data-fk': 'no:' + c.id,
+        onclick: () => act(capPath(c.id, 'dismiss'), {}) }, '×')));
+}
+
+function reminderRow(f) {
+  const due = f.due <= store.data.now;
+  return el('li', { class: 'cap' },
+    el('span', { class: 'cap-time' }, shortWhen(f.due)),
+    el('span', { class: 'cap-src cap-remind' }, due ? 'DUE' : 'REMIND'),
+    el('div', { class: 'cap-main' }, el('span', { class: 'cap-text' }, f.what)),
+    el('div', { class: 'cap-actions' },
+      el('button', { class: 'mini', type: 'button', title: 'Done', 'aria-label': 'Done: ' + f.what, 'data-fk': 'rem:' + f.id,
+        onclick: () => act('api/followups/' + encodeURIComponent(f.id) + '/done', { result: 'done (ticked in the inbox)' }) }, '✓')));
+}
+
+function noteRow(n) {
+  return el('li', { class: 'cap' },
+    el('span', { class: 'cap-time' }, n.at ? shortWhen(n.at) : ''),
+    el('span', { class: 'cap-src cap-brain' }, 'BRAIN'),
+    el('div', { class: 'cap-main' },
+      el('span', { class: 'cap-text' }, n.text),
+      n.task && el('a', { class: 'sugg-link', href: '#today/' + encodeURIComponent(n.task) }, '↳ ' + taskTitle(n.task))),
+    el('div', { class: 'cap-actions' },
+      el('button', { class: 'mini', type: 'button', title: 'Mark read', 'aria-label': 'Mark read: ' + n.text, 'data-fk': 'note:' + n.id,
+        onclick: () => act('api/notes/' + encodeURIComponent(n.id) + '/dismiss', {}) }, '✓')));
+}
+
+export function update() {
+  keepFocus(render, '#cap');
+}
+
+function render() {
+  const { captures, notes, reminders } = store.data;
+  for (const id of picked.keys()) if (!captures.some((c) => c.id === id)) picked.delete(id);
+  $('inbox-sub').textContent = captures.length + ' unsorted · ' + reminders.length + ' reminders · ' +
+    notes.length + ' from the brain';
+  $('process-all').hidden = captures.length === 0;
+  $('caps').replaceChildren(...[...captures].reverse().map(capRow));
+  $('reminders').replaceChildren(...reminders.map(reminderRow));
+  $('reminders-wrap').hidden = reminders.length === 0;
+  $('notes').replaceChildren(...[...notes].reverse().map(noteRow));
+  $('notes-wrap').hidden = notes.length === 0;
+  $('inbox-empty').hidden = inboxCount(store.data) > 0;
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/palette.js" 644 <<'__BRAIN_EOF__'
+// ⌘K palette: search tasks, log lines, decisions and archived tasks, or run a
+// command (go to a view, capture the text, ask about it).
+import { el, api, act } from './core.js';
+
+const SEARCH_DELAY_MS = 150;
+let views = [];
+let onAsk = () => {};
+let root = null;
+let opener = null;
+let items = [];
+let active = 0;
+let timer = null;
+let seq = 0;
+
+export function init(viewList, askHandler) {
+  views = viewList;
+  onAsk = askHandler;
+}
+
+export const isOpen = () => !!root;
+
+export function open() {
+  if (root) return;
+  opener = document.activeElement;
+  const input = el('input', {
+    id: 'pal-q', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'pal-list',
+    'aria-label': 'Search or run a command', placeholder: 'search tasks, logs, decisions… or type a command',
+    oninput: () => schedule(input.value), onkeydown: keys,
+  });
+  root = el('div', { class: 'pal-backdrop', onclick: (e) => { if (e.target === root) close(); } },
+    el('div', { class: 'pal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Search' },
+      el('div', { class: 'pal-head' }, el('span', { class: 'pal-mark', 'aria-hidden': 'true' }, '⌘'), input,
+        el('span', { class: 'pal-esc', 'aria-hidden': 'true' }, 'ESC')),
+      el('ul', { class: 'pal-list', id: 'pal-list', role: 'listbox' })));
+  document.body.append(root);
+  input.focus();
+  show('', []);
+}
+
+export function close() {
+  if (!root) return;
+  root.remove();
+  root = null;
+  clearTimeout(timer);
+  if (opener && opener.focus) opener.focus();
+}
+
+let pending = null;   // a search that is scheduled or running: { query, promise }
+
+function schedule(q) {
+  clearTimeout(timer);
+  const query = q.trim();
+  if (!query) { pending = null; return show('', []); }
+  pending = { query, promise: null };
+  timer = setTimeout(() => search(query), SEARCH_DELAY_MS);
+}
+
+function search(query) {
+  clearTimeout(timer);
+  const mine = ++seq;
+  const promise = api('api/search?q=' + encodeURIComponent(query)).then(
+    (r) => { if (mine === seq && root) show(query, r.results); },
+    (e) => { if (mine === seq && root) show(query, [], e.message); });
+  pending = { query, promise };
+  return promise.then(() => { if (mine === seq) pending = null; });
+}
+
+function commands(q) {
+  const lower = q.toLowerCase().trim();
+  const go = views.filter((v) => !q || v.label.toLowerCase().includes(lower) || ('go ' + v.label.toLowerCase()).includes(lower))
+    .map((v) => ({ type: 'go', label: 'Go to ' + v.label, hint: v.k, run: () => { location.hash = '#' + v.id; } }));
+  if (!q) return go;
+  return [
+    ...go,
+    { type: 'ask', label: 'Ask: ' + q, hint: 'answer from the brain', run: () => onAsk(q) },
+    { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox', run: () => act('api/captures', { text: q }).then(() => { location.hash = '#inbox'; }) },
+  ];
+}
+
+function show(q, results, error) {
+  const found = results.map((r) => ({
+    type: r.type, label: r.label, hint: r.type === 'log' || r.type === 'decision' ? r.hint : r.slug,
+    run: () => {
+      if (r.type === 'archived') onAsk('What happened in the archived task ' + r.slug + '?');
+      else location.hash = '#today/' + encodeURIComponent(r.slug);
+    },
+  }));
+  // Text that names a screen ("system", "go inbox") puts that screen first.
+  const cmds = commands(q);
+  const named = q && cmds.filter((c) => c.type === 'go' && c.label.toLowerCase().replace('go to ', '').startsWith(q.toLowerCase().replace(/^go( to)? /, '')));
+  items = q ? (named.length ? [...named, ...found, ...cmds.filter((c) => !named.includes(c))] : [...found, ...cmds]) : cmds;
+  active = 0;
+  const list = root.querySelector('#pal-list');
+  list.replaceChildren(
+    ...(error ? [el('li', { class: 'pal-none' }, 'search failed: ' + error)] : []),
+    ...(q && !found.length && !error ? [el('li', { class: 'pal-none' }, 'no match · enter to ask, or capture it')] : []),
+    ...items.map((it, i) => el('li', {
+      class: 'pal-item', role: 'option', id: 'pal-' + i, 'aria-selected': String(i === active),
+      onclick: () => run(i), onmousemove: () => highlight(i),
+    }, el('span', { class: 'pal-type' }, it.type), el('span', { class: 'pal-label' }, it.label),
+      el('span', { class: 'pal-hint' }, it.hint || ''))));
+  if (q && !found.length && !error) active = items.findIndex((it) => it.type === 'ask');
+  highlight(active);
+}
+
+function highlight(i) {
+  if (!root || !items.length) return;
+  active = (i + items.length) % items.length;
+  root.querySelectorAll('.pal-item').forEach((n, j) => n.setAttribute('aria-selected', String(j === active)));
+  const cur = root.querySelector('#pal-' + active);
+  root.querySelector('#pal-q').setAttribute('aria-activedescendant', cur ? cur.id : '');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+
+function run(i) {
+  const it = items[i];
+  if (!it) return;
+  close();
+  it.run();
+}
+
+function keys(e) {
+  if (e.key === 'Escape') { e.preventDefault(); close(); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); highlight(active + 1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(active - 1); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    // Enter before the search came back: wait for it, then run the top item.
+    if (pending) (pending.promise || search(pending.query)).then(() => run(active));
+    else run(active);
+  }
+  else if (e.key === 'Tab') { e.preventDefault(); } // keep focus in the dialog
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/ask.js" 644 <<'__BRAIN_EOF__'
+// Ask: questions answered from the brain by a read-only claude run.
+import { $, el, api, store, panelHead, dayLabel, day, hm, reducedMotion } from './core.js';
+
+const SUGGESTIONS = ["What's blocked right now?", 'What did I work on today?', 'What is due next?', 'What did we decide recently?'];
+let history = [];
+let pending = null;   // the question being answered
+let prefill = '';
+
+export function askNow(q) {
+  prefill = q;
+  if (location.hash === '#ask') send(q);
+  else location.hash = '#ask';
+}
+
+export async function mount(panel) {
+  const model = (store.data && store.data.model) || '';
+  panel.replaceChildren(
+    panelHead('03', 'ask', 'ask-sub'),
+    el('div', { class: 'msgs', id: 'msgs', 'aria-live': 'polite' }),
+    el('div', { class: 'ask-foot' },
+      el('div', { class: 'chips', id: 'ask-sugg' }, SUGGESTIONS.map((s) => el('button', {
+        class: 'chip', type: 'button', disabled: !!pending, onclick: () => send(s),
+      }, s))),
+      el('form', { class: 'capture', onsubmit: (e) => { e.preventDefault(); send($('ask-q').value); } },
+        el('div', { class: 'capture-field ask-field' },
+          el('span', { class: 'capture-mark', 'aria-hidden': 'true' }, '?'),
+          el('label', { class: 'sr-only', for: 'ask-q' }, 'Ask your brain'),
+          el('input', { id: 'ask-q', autocomplete: 'off', maxlength: '500', placeholder: 'ask your brain…' })),
+        el('button', { type: 'submit', class: 'capture-add send', id: 'ask-send', disabled: !!pending }, 'SEND'))));
+  $('ask-sub').textContent = 'claude ' + (model || 'haiku') + ' · reads ~/brain, read-only · answers take ~15s';
+  renderMsgs();
+  try {
+    history = (await api('api/ask')).history;
+  } catch (e) {
+    history = [];
+  }
+  if (!$('ask-q')) return;   // the owner left Ask while history was loading
+  renderMsgs();
+  if (prefill) {
+    const q = prefill;
+    prefill = '';
+    send(q);
+  } else {
+    $('ask-q').focus();
+  }
+}
+
+function setPending(on) {
+  if ($('ask-send')) $('ask-send').disabled = on;
+  document.querySelectorAll('#ask-sugg button').forEach((b) => { b.disabled = on; });
+}
+
+export function update() { /* answers do not depend on the polled state */ }
+
+async function send(q) {
+  q = (q || '').trim();
+  if (!q || pending) return;
+  pending = q;
+  $('ask-q').value = '';
+  setPending(true);
+  renderMsgs();
+  try {
+    history = [...history, await api('api/ask', { question: q })];
+  } catch (e) {
+    history = [...history, { at: '', question: q, answer: 'Could not answer: ' + e.message, refs: [], error: true }];
+  } finally {
+    pending = null;
+    setPending(false);
+    if ($('ask-q')) {
+      renderMsgs();
+      $('ask-q').focus();
+    }
+  }
+}
+
+// The small Markdown the model uses (bullets, `code`, **bold**), built as DOM
+// nodes: the answer is still only ever inserted as text.
+function inline(text) {
+  return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/).filter(Boolean).map((part) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 2) return el('code', {}, part.slice(1, -1));
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return el('b', {}, part.slice(2, -2));
+    return part;
+  });
+}
+
+function markdown(text) {
+  const out = [];
+  let list = null;
+  for (const line of text.split('\n')) {
+    const m = /^\s*[-*•]\s+(.*)$/.exec(line);
+    if (m) {
+      if (!list) out.push(list = el('ul', { class: 'md-list' }));
+      list.append(el('li', {}, inline(m[1])));
+    } else if (line.trim()) {
+      list = null;
+      out.push(el('p', {}, inline(line.trim())));
+    } else {
+      list = null;
+    }
+  }
+  return out;
+}
+
+function msg(who, cls, text, refs, at) {
+  return el('div', { class: 'msg' },
+    el('span', { class: 'msg-who ' + cls }, who, at && el('span', { class: 'msg-at' }, at)),
+    el('div', { class: 'msg-body' },
+      cls === 'you' ? el('p', { class: 'msg-text is-q' }, text) : el('div', { class: 'msg-text md' }, markdown(text)),
+      refs && refs.length ? el('div', { class: 'chips' }, refs.map((r) =>
+        el('a', { class: 'chip', href: '#today/' + encodeURIComponent(r) }, '↳ ' + r))) : null));
+}
+
+function renderMsgs() {
+  const box = $('msgs');
+  if (!box) return;
+  const out = [];
+  if (!history.length && !pending) {
+    out.push(el('p', { class: 'empty' }, el('span', { class: 'empty-big' }, 'ask anything.'),
+      el('span', { class: 'empty-sub' }, 'about your tasks, logs, decisions and follow-ups')));
+  }
+  let lastDay = '';
+  for (const h of history.slice(-30)) {
+    if (h.at && day(h.at) !== lastDay) {
+      lastDay = day(h.at);
+      out.push(el('div', { class: 'day' }, dayLabel(lastDay)));
+    }
+    out.push(msg('you', 'you', h.question, null, h.at ? hm(h.at) : ''));
+    out.push(msg('brain', h.error ? 'err' : 'brain', h.answer, h.refs, ''));
+  }
+  if (pending) {
+    out.push(msg('you', 'you', pending, null, ''));
+    out.push(el('div', { class: 'msg' }, el('span', { class: 'msg-who brain' }, 'brain'),
+      el('p', { class: 'msg-text thinking' }, 'reading your brain', el('span', { class: 'cursor', 'aria-hidden': 'true' }, '▍'))));
+  }
+  box.replaceChildren(...out);
+  box.scrollTo({ top: box.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/projects.js" 644 <<'__BRAIN_EOF__'
+// Projects: tasks grouped by repository, in columns by how they are doing.
+// A card opens Today filtered to that project.
+import { $, el, store, panelHead, shortWhen, keepFocus } from './core.js';
+
+const COLUMNS = [
+  ['blocked', 'blocked'], ['active', 'active'], ['waiting', 'waiting'], ['quiet', 'quiet · nothing open'],
+];
+const SEGMENTS = 10;
+
+export function mount(panel) {
+  panel.replaceChildren(
+    panelHead('05', 'projects', 'proj-sub'),
+    el('div', { class: 'proj-grid', id: 'proj-grid' }));
+}
+
+// Ten segments split by task status, in the order work moves.
+function segments(p) {
+  const parts = [['done', p.done], ['active', p.active], ['waiting', p.waiting], ['blocked', p.blocked]];
+  const out = [];
+  let used = 0;
+  parts.forEach(([cls, n], i) => {
+    let k = p.total ? Math.round((n / p.total) * SEGMENTS) : 0;
+    if (n && !k) k = 1;
+    if (i === parts.length - 1) k = Math.max(0, Math.min(k, SEGMENTS - used));
+    for (let j = 0; j < k && used < SEGMENTS; j++, used++) out.push(el('span', { class: 'seg seg-' + cls }));
+  });
+  while (used++ < SEGMENTS) out.push(el('span', { class: 'seg' }));
+  return out;
+}
+
+function card(p) {
+  const open = p.total - p.done;
+  const name = p.name === 'unfiled' ? 'unfiled' : p.name;
+  return el('a', {
+    class: 'pcard', href: '#today/@' + encodeURIComponent(p.name), 'data-fk': 'proj:' + p.name,
+    'aria-label': name + ': ' + open + ' open of ' + p.total + ' tasks. Open in Today.',
+  },
+    el('span', { class: 'pcard-top' }, el('span', { class: 'pcard-id' + (p.name === 'unfiled' ? ' is-unfiled' : '') },
+      p.name === 'unfiled' ? 'unfiled · no session' : name),
+      el('span', { class: 'pcard-n' }, p.total + ' task' + (p.total === 1 ? '' : 's'))),
+    el('span', { class: 'pcard-title' }, open ? open + ' open' : 'all done'),
+    el('span', { class: 'pcard-meta' }, [
+      p.blocked && p.blocked + ' blocked', p.waiting && p.waiting + ' waiting', p.done && p.done + ' done',
+      'upd ' + shortWhen(p.updated)].filter(Boolean).join(' · ')),
+    el('span', { class: 'segs', 'aria-hidden': 'true' }, segments(p)));
+}
+
+export function update() {
+  keepFocus(() => {
+    const ps = store.data.projects;
+    $('proj-sub').textContent = ps.length + ' projects · grouped by the repo each task’s sessions ran in';
+    $('proj-grid').replaceChildren(...COLUMNS.map(([state, label]) => {
+      const cards = ps.filter((p) => p.state === state);
+      return el('section', { class: 'pcol', 'aria-label': label },
+        el('h2', { class: 'pcol-head' }, el('span', {}, label), el('span', { class: 'pcol-n' }, String(cards.length))),
+        ...cards.map(card),
+        cards.length ? null : el('span', { class: 'none' }, 'none'));
+    }));
+  });
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/system.js" 644 <<'__BRAIN_EOF__'
+// System: is the brain healthy, and what has it been doing.
+import { $, el, api, act, panelHead, shortWhen, keepFocus, setStatusLine } from './core.js';
+
+const REFRESH_MS = 30000;
+let status = null;
+let timer = null;
+let mounted = 0;   // bumps on every mount/unmount, so a late refresh knows it is stale
+
+export async function mount(panel) {
+  const me = ++mounted;
+  panel.replaceChildren(
+    panelHead('06', 'system', 'sys-sub'),
+    el('div', { class: 'sys', id: 'sys' }, el('p', { class: 'none' }, 'loading…')));
+  await refresh();
+  if (me === mounted) timer = setInterval(refresh, REFRESH_MS);
+}
+
+export function unmount() {
+  mounted++;
+  clearInterval(timer);
+  timer = null;
+}
+
+async function refresh() {
+  try {
+    status = await api('api/status');
+    if ($('sys')) keepFocus(render);
+  } catch (e) {
+    setStatusLine(false, 'status unavailable: ' + e.message);
+  }
+}
+
+export function update() { /* status has its own refresh */ }
+
+async function setConfig(key, value) {
+  if (await act('api/config', { key, value })) await refresh();
+}
+
+function meter(label, values) {
+  const max = Math.max(1, ...values);
+  const total = values.reduce((a, b) => a + b, 0);
+  return el('div', { class: 'meter' },
+    el('div', { class: 'meter-head' }, el('span', {}, label), el('span', { class: 'meter-v' }, total + ' in 24h')),
+    el('div', { class: 'meter-segs', role: 'img', 'aria-label': label + ': ' + total + ' in the last 24 hours, by hour' },
+      values.map((v) => el('span', { class: 'mseg', style: { '--lvl': String(v ? 0.25 + 0.75 * (v / max) : 0) }, title: String(v) }))),
+    el('div', { class: 'meter-axis', 'aria-hidden': 'true' }, el('span', {}, '−24h'), el('span', {}, 'now')));
+}
+
+function toggle(key, on, labels) {
+  return el('button', {
+    class: 'switch' + (on ? ' is-on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on),
+    'aria-label': labels, 'data-fk': 'cfg:' + key, onclick: () => setConfig(key, on ? 'off' : 'on'),
+  }, el('span', { class: 'switch-knob' }));
+}
+
+function render() {
+  const s = status;
+  const bad = s.checks.filter((c) => c.level !== 'ok').length;
+  $('sys-sub').textContent = bad ? bad + ' need attention · ' + s.store.path : 'all checks ok · ' + s.store.path;
+  const models = s.page_keys.AGENT_MODEL;
+  $('sys').replaceChildren(
+    el('div', { class: 'sys-col' },
+      el('section', { class: 'block' },
+        el('h2', { class: 'label rule' }, 'health'),
+        el('ul', { class: 'checklist' }, s.checks.map((c) => el('li', { class: 'chk' },
+          el('span', { class: 'dot dot-' + c.level, role: 'img', 'aria-label': c.level }),
+          el('span', { class: 'chk-label' }, c.label),
+          el('span', { class: 'chk-detail' }, c.detail))))),
+      el('div', { class: 'setting' },
+        el('span', { class: 'setting-text' }, el('b', {}, 'Notifications'), el('span', {}, 'macOS banners for things the agent finds')),
+        toggle('NOTIFY', s.config.NOTIFY === 'on', 'Notifications')),
+      el('div', { class: 'setting' },
+        el('span', { class: 'setting-text' }, el('b', {}, 'Agent model'), el('span', {}, 'used by the background agent and Ask')),
+        el('div', { class: 'seg-keys', role: 'group', 'aria-label': 'Agent model' }, models.map((m) => el('button', {
+          class: 'st', type: 'button', 'aria-pressed': String(s.config.AGENT_MODEL === m), 'data-fk': 'model:' + m,
+          onclick: () => { if (s.config.AGENT_MODEL !== m) setConfig('AGENT_MODEL', m); },
+        }, m)))),
+      el('section', { class: 'block' },
+        el('h2', { class: 'label rule' }, 'store'),
+        el('dl', { class: 'facts facts-4' }, [['tasks', s.store.tasks], ['archived', s.store.archived],
+          ['decisions', s.store.decisions], ['follow-ups', s.store.followups_open], ['captures', s.store.captures],
+          ['sessions', s.store.sessions]].map(([k, v]) => el('div', {}, el('dt', {}, k), el('dd', {}, String(v))))))),
+    el('div', { class: 'sys-col' },
+      el('div', { class: 'big' },
+        el('span', { class: 'label' }, 'ticks today'),
+        el('span', { class: 'big-n' }, String(s.tick.today).padStart(2, '0')),
+        el('span', { class: 'big-sub' }, 'every ' + s.tick.every_minutes + ' min · agent ' + s.agent.today + ' runs today · ' + s.agent.model)),
+      meter('sessions started', s.activity.sessions),
+      meter('log lines written', s.activity.log),
+      el('section', { class: 'block' },
+        el('h2', { class: 'label rule' }, 'recent ticks'),
+        el('ol', { class: 'ticks' }, s.tick.recent.map((r) => el('li', {},
+          el('span', { class: 'tick-at' }, shortWhen(r.at)), el('span', { class: 'tick-r' }, r.result)))))));
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/graph.js" 644 <<'__BRAIN_EOF__'
+// Graph: projects, tasks and decisions, and how they connect.
+// Positions come from a small deterministic force layout (same data, same picture).
+import { $, el, api, store, panelHead, keepFocus } from './core.js';
+import { askNow } from './ask.js';
+
+const ITERATIONS = 300;
+const PAD = 9;            // keep nodes this far (in %) from the edges
+const NS = 'http://www.w3.org/2000/svg';
+let data = null;
+let pos = new Map();
+let picked = null;
+let lastKey = '';
+
+export async function mount(panel) {
+  panel.replaceChildren(
+    panelHead('04', 'graph', 'graph-sub'),
+    el('div', { class: 'graph' },
+      el('div', { class: 'graph-canvas', id: 'graph-canvas' },
+        document.createElementNS(NS, 'svg')),
+      el('aside', { class: 'graph-side', id: 'graph-side', 'aria-live': 'polite' })));
+  const svg = $('graph-canvas').querySelector('svg');
+  svg.setAttribute('viewBox', '0 0 100 100');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+  await refresh();
+}
+
+export async function update() {
+  if ($('graph-canvas')) await refresh();
+}
+
+async function refresh() {
+  try {
+    data = await api('api/graph');
+  } catch (e) {
+    $('graph-sub').textContent = 'graph unavailable: ' + e.message;
+    return;
+  }
+  const key = data.nodes.map((n) => n.id).join('|') + '#' + data.edges.map((e) => e.a + e.b).join('|');
+  if (key !== lastKey) {
+    lastKey = key;
+    pos = layout(data.nodes, data.edges);
+  }
+  if (!data.nodes.some((n) => n.id === picked)) picked = (data.nodes.find((n) => n.kind === 'project') || data.nodes[0] || {}).id || null;
+  keepFocus(render);
+}
+
+function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return (h >>> 0) / 4294967295;
+}
+
+function layout(nodes, edges) {
+  const p = new Map(nodes.map((n, i) => {
+    const a = (i / Math.max(1, nodes.length)) * Math.PI * 2 + hash(n.id);
+    const r = n.kind === 'project' ? 12 : 30;
+    return [n.id, { x: 50 + r * Math.cos(a), y: 50 + r * Math.sin(a), vx: 0, vy: 0 }];
+  }));
+  const links = edges.filter((e) => p.has(e.a) && p.has(e.b));
+  for (let it = 0; it < ITERATIONS; it++) {
+    const cool = 1 - it / ITERATIONS;
+    for (const a of p.values()) {
+      for (const b of p.values()) {
+        if (a === b) continue;
+        const dx = a.x - b.x, dy = a.y - b.y, d2 = Math.max(dx * dx + dy * dy, 1);
+        a.vx += (dx / d2) * 6; a.vy += (dy / d2) * 6;
+      }
+      a.vx += (50 - a.x) * 0.02; a.vy += (50 - a.y) * 0.02;
+    }
+    for (const e of links) {
+      const a = p.get(e.a), b = p.get(e.b);
+      const want = e.kind === 'project' ? 20 : 16;
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(Math.hypot(dx, dy), 0.01);
+      const f = ((d - want) / d) * 0.08;
+      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+    }
+    for (const a of p.values()) {
+      a.x = Math.min(100 - PAD, Math.max(PAD, a.x + a.vx * cool));
+      a.y = Math.min(100 - PAD, Math.max(PAD, a.y + a.vy * cool));
+      a.vx *= 0.5; a.vy *= 0.5;
+    }
+  }
+  return p;
+}
+
+const neighbours = (id) => data.edges.filter((e) => e.a === id || e.b === id)
+  .map((e) => ({ id: e.a === id ? e.b : e.a, kind: e.kind }));
+const byId = (id) => data.nodes.find((n) => n.id === id);
+
+function size(n) {
+  if (n.kind === 'project') return 16 + 4 * Math.min(6, neighbours(n.id).length);
+  if (n.kind === 'task') return 12 + Math.min(10, Math.round((n.log || 0) / 3));
+  return 10;
+}
+
+function render() {
+  const projects = data.nodes.filter((n) => n.kind === 'project').length;
+  const tasks = data.nodes.filter((n) => n.kind === 'task').length;
+  $('graph-sub').textContent = projects + ' projects · ' + tasks + ' open tasks · linked by repo, shared sessions and decisions';
+  const svg = $('graph-canvas').querySelector('svg');
+  const near = new Set(picked ? [picked, ...neighbours(picked).map((x) => x.id)] : []);
+  svg.replaceChildren(...data.edges.filter((e) => pos.has(e.a) && pos.has(e.b)).map((e) => {
+    const a = pos.get(e.a), b = pos.get(e.b);
+    const line = document.createElementNS(NS, 'line');
+    for (const [k, v] of [['x1', a.x], ['y1', a.y], ['x2', b.x], ['y2', b.y]]) line.setAttribute(k, v.toFixed(2));
+    line.setAttribute('class', 'edge edge-' + e.kind + (near.has(e.a) && near.has(e.b) && (e.a === picked || e.b === picked) ? ' is-hot' : ''));
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+    return line;
+  }));
+  const canvas = $('graph-canvas');
+  canvas.querySelectorAll('.gnode').forEach((n) => n.remove());
+  for (const n of data.nodes) {
+    const p = pos.get(n.id);
+    const s = size(n);
+    canvas.append(el('button', {
+      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') + (picked && !near.has(n.id) ? ' is-far' : ''),
+      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked),
+      'aria-label': n.kind + ': ' + n.label, style: { left: p.x + '%', top: p.y + '%' },
+      onclick: () => { picked = n.id; keepFocus(render); },
+    }, el('span', { class: 'gdot', style: { width: s + 'px', height: s + 'px' } }),
+      el('span', { class: 'glabel' }, n.label)));
+  }
+  renderSide();
+}
+
+function describe(n) {
+  if (n.kind === 'task') {
+    const t = store.data && store.data.tasks.find((x) => x.slug === n.slug);
+    return t ? (t.next ? 'Next: ' + t.next : t.goal || '') : '';
+  }
+  if (n.kind === 'decision') return n.date + ' · ' + n.decision;
+  const ts = neighbours(n.id).filter((x) => x.kind === 'project');
+  return ts.length + ' open task' + (ts.length === 1 ? '' : 's') + ' in this repo.';
+}
+
+function renderSide() {
+  const n = byId(picked);
+  if (!n) { $('graph-side').replaceChildren(el('p', { class: 'none' }, 'nothing to show yet.')); return; }
+  const links = neighbours(n.id).map((x) => byId(x.id)).filter(Boolean);
+  const question = n.kind === 'task' ? 'Where are we on ' + n.label + '?' :
+    n.kind === 'project' ? 'What is going on in the ' + n.label + ' project?' : 'Why did we decide: ' + n.label + '?';
+  $('graph-side').replaceChildren(...[
+    el('span', { class: 'label gside-kind' }, n.kind + (n.status ? ' · ' + n.status : '')),
+    el('h2', { class: 'gside-title' }, n.label),
+    el('p', { class: 'goal' }, describe(n)),
+    el('h3', { class: 'label' }, 'linked'),
+    el('div', { class: 'glinks' }, links.length ? links.map((m) => el('button', {
+      class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id, onclick: () => { picked = m.id; keepFocus(render); },
+    }, '→ ' + m.label)) : el('span', { class: 'none' }, 'none')),
+    el('span', { class: 'spacer' }),
+    n.kind === 'task' ? el('a', { class: 'btn-key gside-open', href: '#today/' + encodeURIComponent(n.slug) }, 'OPEN IN TODAY') : null,
+    el('button', { class: 'btn-acc', type: 'button', onclick: () => askNow(question) }, 'ASK ABOUT THIS'),
+  ].filter(Boolean));
+}
+
 __BRAIN_EOF__
 put_file "$BRAIN/bin/brain" 755 <<'__BRAIN_EOF__'
 #!/bin/bash
@@ -2975,12 +4976,18 @@ From a terminal:
 
 ```
 ~/brain/bin/brain board            # open tasks, follow-ups, inbox
-~/brain/bin/brain serve --open     # today's tasks in the browser (127.0.0.1:7477, Ctrl-C to stop)
+~/brain/bin/brain serve --open     # the brain page in your browser (127.0.0.1:7477, Ctrl-C to stop)
+~/brain/bin/brain capture "text"   # quick note; sorted later in the Inbox
+~/brain/bin/brain search "words"   # tasks, log lines, decisions, archive
+~/brain/bin/brain query "question" # answered from the brain by claude, read-only
+~/brain/bin/brain projects         # tasks grouped by repo
+~/brain/bin/brain status           # health: background job, last tick, agent, hooks, git
+~/brain/bin/brain config NOTIFY off   # change one setting (validated)
 ~/brain/bin/brain show SLUG
 ~/brain/bin/brain tick --dry-run   # what the next tick would do, without doing it
 ~/brain/bin/brain tick             # run a tick now
 ~/brain/bin/brain export out.json  # everything as one JSON file
-~/brain/bin/brain lint             # check task files against the size rules
+~/brain/bin/brain lint             # check task files against the format rules
 ~/brain/bin/brain help
 ```
 
@@ -3052,14 +5059,28 @@ Nothing secret belongs here: no tokens, credentials or customer data.
 ## Web page
 
 `~/brain/bin/brain serve --open` starts a small server on this machine only
-(127.0.0.1:7477) and opens the Today page: open tasks and tasks finished
-today, each with its Goal, Direction, Next, follow-ups, links and the full
-log. From the page you can change a task's status, post an update and tick a
-follow-up; those entries are logged as "you". The page refreshes every 10
-seconds, so work recorded by Claude sessions and the agent shows up on its
-own. It keeps running until you press Ctrl-C in its terminal. Each run uses
-a new secret key embedded in the page, so other websites cannot read or
-change your brain through it.
+(127.0.0.1:7477) and opens the brain page. It keeps running until you press
+Ctrl-C in its terminal, and refreshes every 10 seconds, so work recorded by
+Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
+Cmd-K (or /) searches.
+
+- **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
+  task's log, a new task, or a reminder) and you can change that before
+  accepting. Reminders with no task and the brain's own messages are here too.
+- **Today (2):** open tasks and tasks finished today: Goal, Direction, Next,
+  follow-ups, links and the full log. Change status, post an update, tick a
+  follow-up. Your entries are logged as "you".
+- **Ask (3):** questions answered from your brain by claude (the agent's
+  model), read-only, in about 15 seconds. Answers link to the tasks they used.
+- **Graph (4):** projects, open tasks and decisions, linked by repo, by
+  sessions that worked on two tasks, and by decisions.
+- **Projects (5):** tasks grouped by the repo their sessions ran in, in
+  columns by state; a card opens Today filtered to that project.
+- **System (6):** health checks (background job, last tick, agent, hooks,
+  git), the notifications switch and agent model, and 24 hours of activity.
+
+Each run uses a new secret key embedded in the page, so other websites
+cannot read or change your brain through it.
 __BRAIN_EOF__
 keep_file "$BRAIN/tasks/_template.md" <<'__BRAIN_EOF__'
 ---
@@ -3109,6 +5130,10 @@ keep_file "$BRAIN/inbox.md" <<'__BRAIN_EOF__'
 # Inbox
 
 __BRAIN_EOF__
+keep_file "$BRAIN/captures.md" <<'__BRAIN_EOF__'
+# Captures
+
+__BRAIN_EOF__
 [ -e "$BRAIN/sessions.log" ] || { : > "$BRAIN/sessions.log"; say "created $BRAIN/sessions.log"; }
 
 "$BRAIN/bin/brain" _config
@@ -3154,6 +5179,8 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 ~/brain/bin/brain followup WHEN SLUG "what to check"   # WHEN: +30m +2h +1d next-workday HH:MM tomorrow "YYYY-MM-DD HH:MM"
 ~/brain/bin/brain followup WHEN SLUG "what" --remind   # owner reminders (fire at any hour)
 ~/brain/bin/brain fdone FOLLOWUP_ID "result"
+~/brain/bin/brain search "words"                       # tasks, log lines, decisions, archive
+~/brain/bin/brain capture-accept CAPTURE_ID --kind log --dest SLUG
 ```
 
 ## 1. Match (as soon as real work starts)
@@ -3227,8 +5254,14 @@ Owner says a task is done: `done SLUG "final line"` (sets status, closes its fol
 ## 8. Recall
 
 "What's on my board", "where was I on X", "what did we decide about Y": answer
-briefly from `~/brain` (`board`, `show SLUG`, `grep -i` in `~/brain/decisions.md`,
-`~/brain/archive/`).
+briefly from `~/brain` (`board`, `search "words"`, `show SLUG`).
+
+## 9. Captures
+
+The board's Captures section lists the owner's quick notes (typed on the
+brain page). If one is clearly about this session's work, file it with
+`capture-accept ID --kind log --dest SLUG` (that adds it to the task's log;
+do not log it again). Leave the rest for the owner.
 
 ## Never
 
@@ -3264,7 +5297,11 @@ fi
 # ---------------------------------------------------------------- launchd
 TICK_MINUTES="$(sed -n 's/^TICK_MINUTES=\([0-9][0-9]*\).*/\1/p' "$BRAIN/config" | tail -n 1)"
 TICK_MINUTES="${TICK_MINUTES:-15}"
-if [ "$OS" = "Darwin" ]; then
+if [ "${BRAIN_NO_LAUNCHD:-}" = 1 ]; then
+  # Tests: the job label is per user, not per HOME, so touching launchd here
+  # would replace the owner's real job.
+  say "launchd: skipped (BRAIN_NO_LAUNCHD=1)"
+elif [ "$OS" = "Darwin" ]; then
   mkdir -p "$HOME/Library/LaunchAgents"
   # launchd starts jobs with a minimal PATH: record the installer's PATH.
   "$PY" - "$PLIST.gen.$$" "$LABEL" "$BRAIN" "$TICK_MINUTES" <<'__BRAIN_EOF__'
