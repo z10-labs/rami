@@ -1,5 +1,5 @@
 // Second Brain page: router, rail keys, ⌘K, polling. Views live in their own modules.
-import { $, el, store, load, isTyping, POLL_MS } from './core.js';
+import { $, el, store, load, isTyping, getLook, setLook, POLL_MS } from './core.js';
 import * as inbox from './inbox.js';
 import * as today from './today.js';
 import * as ask from './ask.js';
@@ -96,12 +96,14 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.metaKey || e.ctrlKey || e.altKey || isTyping() || palette.isOpen()) return;
   if (e.key === '/') { e.preventDefault(); palette.open(); return; }
+  if (e.key === 'c') { e.preventDefault(); palette.open('capture'); return; }
   const v = VIEWS.find((x) => x.k === e.key);
   if (v) location.hash = '#' + v.id;
 });
 $('search-key').addEventListener('click', () => palette.open());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 
+setLook(getLook());
 palette.init(VIEWS, (q) => ask.askNow(q));
 
 function tickClock() {

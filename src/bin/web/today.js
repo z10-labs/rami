@@ -58,7 +58,12 @@ const sortedTasks = () => store.data.tasks.filter(inProject).sort((a, b) =>
   (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || b.updated.localeCompare(a.updated));
 
 export function update() {
+  const arrived = explicit;
   keepFocus(render, '#upd');
+  if (arrived && selected && document.activeElement === document.body) {
+    const row = document.querySelector('[data-fk="row:' + CSS.escape(selected) + '"]');
+    if (row) row.focus({ preventScroll: true });
+  }
 }
 
 function render() {

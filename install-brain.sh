@@ -2541,7 +2541,8 @@ who why would yet look looks fine maybe should today tomorrow""".split())
 
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-DAY_RE = re.compile(r"\b(today|tonight|tomorrow|(mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b", re.I)
+DAY_RE = re.compile(r"\b(today|tonight|tomorrow|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|"
+                    r"thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", re.I)
 TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b", re.I)
 
 
@@ -3199,6 +3200,7 @@ put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
 <meta name="brain-token" content="__BRAIN_TOKEN__">
 <title>Second Brain</title>
 <link rel="icon" href="data:,">
+<script src="look.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="app.css">
@@ -3240,28 +3242,47 @@ put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
 </html>
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/app.css" 644 <<'__BRAIN_EOF__'
-/* Second Brain: Today screen. Tokens follow the Claude Design source
-   ("Second Brain.dc.html"): direction A for light, direction B for dark. */
+/* Second Brain page. Tokens follow the Claude Design source ("Second
+   Brain.dc.html"), whose three "directions" are the three looks: A light,
+   B dark, C steel. With no choice made (no data-dir), the OS decides A or B. */
 :root {
-  --chassis: #d4d3ce; --panel: #eeede9; --ink: #141414; --mute: #5f5d57; --line: #c2c0ba;
-  --acc: #ff4f12; --acc-dk: #c23a0a; --acc-ink: #141414; --acc2: #2a56ff;
-  --acc-text: #b33608; --bad-ink: #fff; --acc2-ink: #fff; --ok: #1f9d55; --warn: #f5b301;
-  --disp: #161616; --disp-ink: #efeee9; --key: #fafaf7; --key-ink: #141414; --led: #3ddc84;
-  --bad: #d92d20; --wait: #8a6d00;
   --sans: 'Archivo', system-ui, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
   --fast: 80ms; --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+:root, :root[data-dir="a"] {
+  --chassis: #d4d3ce; --panel: #eeede9; --ink: #141414; --mute: #5f5d57; --line: #c2c0ba;
+  --acc: #ff4f12; --acc-dk: #c23a0a; --acc-ink: #141414; --acc2: #2a56ff;
+  --acc-text: #b33608; --bad-ink: #fff; --acc2-ink: #fff; --acc2-text: #2a56ff; --key-acc: #b33608; --ok: #1f9d55; --warn: #f5b301;
+  --disp: #161616; --disp-ink: #efeee9; --key: #fafaf7; --key-ink: #141414; --led: #3ddc84;
+  --bad: #d92d20; --wait: #8a6d00; --sel: #fafaf7;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-dir]) {
     --chassis: #1e1e1e; --panel: #292929; --ink: #ecebe6; --mute: #a8a7a1; --line: #3e3e3d;
     --acc: #ff5a1f; --acc-dk: #a8360c; --acc-ink: #141414; --acc2: #6b86ff;
-    --acc-text: #ff7d4d; --bad-ink: #141414; --acc2-ink: #141414; --ok: #3ddc84; --warn: #ff9f1a;
+    --acc-text: #ff7d4d; --bad-ink: #141414; --acc2-ink: #141414; --acc2-text: #8ea2ff; --key-acc: #ff7d4d; --ok: #3ddc84; --warn: #ff9f1a;
     --disp: #0b0b0b; --disp-ink: #ffd23f; --key: #353534; --key-ink: #ecebe6; --led: #ffd23f;
-    --bad: #ff6b5e; --wait: #e0b84a;
+    --bad: #ff6b5e; --wait: #e0b84a; --sel: #353534;
     color-scheme: dark;
   }
+}
+:root[data-dir="b"] {
+  --chassis: #1e1e1e; --panel: #292929; --ink: #ecebe6; --mute: #a8a7a1; --line: #3e3e3d;
+  --acc: #ff5a1f; --acc-dk: #a8360c; --acc-ink: #141414; --acc2: #6b86ff;
+  --acc-text: #ff7d4d; --bad-ink: #141414; --acc2-ink: #141414; --acc2-text: #8ea2ff; --key-acc: #ff7d4d; --ok: #3ddc84; --warn: #ff9f1a;
+  --disp: #0b0b0b; --disp-ink: #ffd23f; --key: #353534; --key-ink: #ecebe6; --led: #ffd23f;
+  --bad: #ff6b5e; --wait: #e0b84a; --sel: #353534;
+  color-scheme: dark;
+}
+:root[data-dir="c"] {
+  --chassis: #b8bbbe; --panel: #e7e8e9; --ink: #111214; --mute: #4c4f53; --line: #a1a4a8;
+  --acc: #ffc21a; --acc-dk: #b8890a; --acc-ink: #111214; --acc2: #ff4f12;
+  --acc-text: #765500; --bad-ink: #fff; --acc2-ink: #111214; --acc2-text: #a2330b; --key-acc: #ffc21a; --ok: #1f9d55; --warn: #ff4f12;
+  --disp: #1a1c1e; --disp-ink: #e7e8e9; --key: #2a2c2e; --key-ink: #f1f1f1; --led: #ffc21a;
+  --bad: #c4281c; --wait: #6f5300; --sel: #f6f7f8;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -3345,8 +3366,8 @@ a.key { text-decoration: none; }
   display: grid; grid-template-columns: 46px 30px minmax(0, 1fr); gap: 12px; align-items: start;
   padding: 14px 8px; border-bottom: 1px dashed var(--line); border-radius: 6px; cursor: pointer;
 }
-.row:hover { background: color-mix(in srgb, var(--key) 55%, transparent); }
-.row.is-sel { background: var(--key); box-shadow: inset 3px 0 0 var(--acc); }
+.row:hover { background: color-mix(in srgb, var(--sel) 55%, transparent); }
+.row.is-sel { background: var(--sel); box-shadow: inset 3px 0 0 var(--acc); }
 .row.is-done { opacity: .55; }
 .row.is-done .row-title { text-decoration: line-through; }
 .row-time { font: 500 11px var(--mono); color: var(--mute); padding-top: 7px; }
@@ -3406,7 +3427,7 @@ a.key { text-decoration: none; }
 .chip { border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 4px; box-shadow: 0 2px 0 var(--line);
   font: 500 11px var(--mono); padding: 5px 9px; text-decoration: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 a.chip:hover { border-color: var(--ink); color: var(--key-ink); }
-span.chip { box-shadow: none; background: transparent; }
+span.chip { box-shadow: none; background: transparent; color: var(--ink); }
 
 /* ---------------------------------------------------------------- updates */
 .composer { display: flex; gap: 8px; }
@@ -3421,7 +3442,7 @@ span.chip { box-shadow: none; background: transparent; }
 .upd-who { display: flex; flex-direction: column; gap: 2px; font: 500 10px var(--mono); color: var(--mute); }
 .upd-who b { font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .upd-who b.you { color: var(--acc-text); }
-.upd-who b.session { color: var(--acc2); }
+.upd-who b.session { color: var(--acc2-text); }
 .upd-text { font-size: 14px; line-height: 1.45; text-wrap: pretty; overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- inbox */
@@ -3443,7 +3464,7 @@ span.chip { box-shadow: none; background: transparent; }
 .cap { display: grid; grid-template-columns: 44px 58px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 15px 0; border-bottom: 1px dashed var(--line); }
 .cap-time { font: 500 11px var(--mono); color: var(--mute); }
 .cap-src { font: 600 9px var(--mono); letter-spacing: .1em; border: 1px solid var(--ink); border-radius: 3px; padding: 3px 0; text-align: center; }
-.cap-brain { border-color: var(--acc2); color: var(--acc2); }
+.cap-brain { border-color: var(--acc2-text); color: var(--acc2-text); }
 .cap-main { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; min-width: 0; }
 .cap-text { font-size: 16px; text-wrap: pretty; overflow-wrap: anywhere; }
 .sugg { max-width: 100%; appearance: none; -webkit-appearance: none; border: 0; border-radius: 4px; padding: 4px 8px; cursor: pointer;
@@ -3451,8 +3472,8 @@ span.chip { box-shadow: none; background: transparent; }
 .sugg-log { background: var(--acc2); color: var(--acc2-ink); }
 .sugg-task { background: var(--acc); color: var(--acc-ink); }
 .sugg-remind { background: var(--ink); color: var(--panel); }
-.sugg-link { font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--acc2); text-decoration: none; }
-.sugg-link:hover { text-decoration: underline; color: var(--acc2); }
+.sugg-link { font: 600 10px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--acc2-text); text-decoration: none; }
+.sugg-link:hover { text-decoration: underline; color: var(--acc2-text); }
 .cap-actions { display: flex; gap: 6px; }
 .mini { width: 32px; height: 30px; border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 5px; box-shadow: 0 2px 0 var(--line); font: 600 13px var(--mono); padding: 0; }
 .mini:active { transform: translateY(2px); box-shadow: none; }
@@ -3481,7 +3502,7 @@ span.chip { box-shadow: none; background: transparent; }
 .msg { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 16px; max-width: 860px; }
 .msg-who { display: flex; flex-direction: column; gap: 3px; font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; padding-top: 4px; }
 .msg-who.you { color: var(--acc-text); }
-.msg-who.brain { color: var(--acc2); }
+.msg-who.brain { color: var(--acc2-text); }
 .msg-who.err { color: var(--bad); }
 .msg-at { font-weight: 500; color: var(--mute); letter-spacing: 0; }
 .msg-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
@@ -3491,7 +3512,7 @@ span.chip { box-shadow: none; background: transparent; }
 .md { display: flex; flex-direction: column; gap: 8px; }
 .md p { margin: 0; }
 .md-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
-.md code { font: 500 .88em var(--mono); background: var(--key); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+.md code { font: 500 .88em var(--mono); background: var(--sel); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
 button.chip:disabled { opacity: .5; cursor: default; }
 .cursor { margin-left: 4px; animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
@@ -3512,15 +3533,15 @@ button.chip { font: 500 11px var(--mono); }
 .pcard:hover { border-color: var(--ink); color: var(--key-ink); }
 .pcard:active { transform: translateY(3px); box-shadow: none; }
 .pcard-top { display: flex; justify-content: space-between; gap: 8px; font: 600 10px var(--mono); }
-.pcard-id { color: var(--acc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pcard-n { color: var(--mute); white-space: nowrap; }
-.pcard-id.is-unfiled { color: var(--mute); }
+.pcard-id { color: var(--key-acc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard-n { color: color-mix(in srgb, var(--key-ink) 72%, transparent); white-space: nowrap; }
+.pcard-id.is-unfiled { color: color-mix(in srgb, var(--key-ink) 72%, transparent); }
 .pcard-title { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
-.pcard-meta { font: 500 10px var(--mono); color: var(--mute); }
+.pcard-meta { font: 500 10px var(--mono); color: color-mix(in srgb, var(--key-ink) 72%, transparent); }
 .segs { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
-.seg { height: 6px; border-radius: 1px; background: var(--line); }
+.seg { height: 6px; border-radius: 1px; background: color-mix(in srgb, var(--key-ink) 18%, transparent); }
 .seg-done { background: var(--acc); }
-.seg-active { background: var(--ink); }
+.seg-active { background: var(--key-ink); }
 .seg-waiting { background: var(--wait); }
 .seg-blocked { background: var(--bad); }
 
@@ -3544,6 +3565,7 @@ button.chip { font: 500 11px var(--mono); }
 .switch-knob { position: absolute; top: 3px; left: 3px; width: 26px; height: 22px; border-radius: 3px; background: var(--key); box-shadow: 0 1px 0 var(--line); transition: transform .15s; }
 .switch.is-on .switch-knob { transform: translateX(30px); }
 .seg-keys { display: grid; grid-template-columns: repeat(3, 76px); gap: 6px; }
+.seg-keys-4 { grid-template-columns: repeat(4, 64px); }
 .facts-4 { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 14px; }
 .big { background: var(--disp); color: var(--disp-ink); border-radius: 10px; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
 .big .label { color: inherit; opacity: .65; }
@@ -3571,7 +3593,12 @@ button.chip { font: 500 11px var(--mono); }
 .edge.is-hot { stroke: var(--acc); stroke-width: 2; opacity: 1; }
 .gnode { position: absolute; transform: translate(-50%, -50%); border: 0; background: transparent; padding: 0;
   display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink); transition: opacity var(--fast); }
-.gnode.is-far { opacity: .45; }
+.gnode.is-far .gdot { opacity: .45; }
+.gnode.is-far .glabel { color: var(--mute); }
+.gnode-l { align-items: flex-start; }
+.gnode-l .gdot { margin-left: 4px; }
+.gnode-r { align-items: flex-end; }
+.gnode-r .gdot { margin-right: 4px; }
 .gdot { display: block; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--key); }
 .gnode-project .gdot { background: var(--ink); }
 .gnode-task.st-active .gdot { background: var(--acc); }
@@ -3580,7 +3607,8 @@ button.chip { font: 500 11px var(--mono); }
 .gnode-decision .gdot { background: var(--acc2); border-radius: 3px; }
 .gnode.is-picked .gdot { box-shadow: 0 0 0 4px var(--panel), 0 0 0 6px var(--ink); }
 .glabel { font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel); padding: 1px 4px;
-  white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.graph-canvas.is-narrow .gnode-task:not(.is-picked) .glabel, .graph-canvas.is-narrow .gnode-decision:not(.is-picked) .glabel { display: none; }
 .graph-side { padding: 24px; display: flex; flex-direction: column; gap: 12px; overflow: auto; min-width: 0; }
 .gside-kind { color: var(--acc-text); }
 .gside-title { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
@@ -3622,6 +3650,7 @@ button.chip { font: 500 11px var(--mono); }
   .chk { grid-template-columns: 22px minmax(0, 1fr); }
   .chk-detail { grid-column: 2; }
   .seg-keys { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .seg-keys-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .setting { flex-wrap: wrap; }
   .rail .key { height: 48px; min-width: 0; }
   .rail .spacer { display: none; }
@@ -3647,7 +3676,7 @@ button.chip { font: 500 11px var(--mono); }
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/app.js" 644 <<'__BRAIN_EOF__'
 // Second Brain page: router, rail keys, ⌘K, polling. Views live in their own modules.
-import { $, el, store, load, isTyping, POLL_MS } from './core.js';
+import { $, el, store, load, isTyping, getLook, setLook, POLL_MS } from './core.js';
 import * as inbox from './inbox.js';
 import * as today from './today.js';
 import * as ask from './ask.js';
@@ -3744,12 +3773,14 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.metaKey || e.ctrlKey || e.altKey || isTyping() || palette.isOpen()) return;
   if (e.key === '/') { e.preventDefault(); palette.open(); return; }
+  if (e.key === 'c') { e.preventDefault(); palette.open('capture'); return; }
   const v = VIEWS.find((x) => x.k === e.key);
   if (v) location.hash = '#' + v.id;
 });
 $('search-key').addEventListener('click', () => palette.open());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 
+setLook(getLook());
 palette.init(VIEWS, (q) => ask.askNow(q));
 
 function tickClock() {
@@ -3873,7 +3904,7 @@ export function keepFocus(render, fallback) {
   const index = key ? sameKind().indexOf(cur) : -1;
   render();
   if (!key || (document.activeElement && document.activeElement !== document.body)) return;
-  const usable = (n) => n && !n.disabled && n.isConnected;
+  const usable = (n) => n && !n.disabled && n.isConnected && n.offsetParent !== null;
   let n = document.querySelector('[data-fk="' + CSS.escape(key) + '"]');
   if (!usable(n)) {
     const peers = sameKind().filter(usable);
@@ -3881,6 +3912,19 @@ export function keepFocus(render, fallback) {
   }
   if (!usable(n) && fallback) n = document.querySelector(fallback);
   if (usable(n)) n.focus({ preventScroll: true });
+}
+
+// The look (design "directions"): auto follows the OS; a/b/c force one.
+// Kept per browser; storage can be unavailable, so every access is guarded.
+export const LOOKS = [['auto', 'auto'], ['a', 'light'], ['b', 'dark'], ['c', 'steel']];
+const LOOK_KEY = 'brain.look';
+export function getLook() {
+  try { return localStorage.getItem(LOOK_KEY) || 'auto'; } catch (e) { return 'auto'; }
+}
+export function setLook(look) {
+  if (look === 'auto') delete document.documentElement.dataset.dir;
+  else document.documentElement.dataset.dir = look;
+  try { localStorage.setItem(LOOK_KEY, look); } catch (e) { /* not remembered; still applied */ }
 }
 
 export const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -3957,7 +4001,12 @@ const sortedTasks = () => store.data.tasks.filter(inProject).sort((a, b) =>
   (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || b.updated.localeCompare(a.updated));
 
 export function update() {
+  const arrived = explicit;
   keepFocus(render, '#upd');
+  if (arrived && selected && document.activeElement === document.body) {
+    const row = document.querySelector('[data-fk="row:' + CSS.escape(selected) + '"]');
+    if (row) row.focus({ preventScroll: true });
+  }
 }
 
 function render() {
@@ -4108,7 +4157,7 @@ export function mount(panel) {
       el('h1', { id: 'view-heading' }, 'inbox'),
       el('span', { class: 'panel-sub', id: 'inbox-sub' }),
       el('span', { class: 'spacer' }),
-      el('button', { class: 'btn-acc', type: 'button', id: 'process-all', onclick: processAll }, 'process all ↵')),
+      el('button', { class: 'btn-acc', type: 'button', id: 'process-all', 'data-fk': 'pall', onclick: processAll }, 'process all ↵')),
     el('div', { class: 'inbox' },
       el('form', { class: 'capture', onsubmit: capture },
         el('div', { class: 'capture-field' },
@@ -4158,6 +4207,7 @@ async function processAll() {
     if (!(await act(capPath(c.id, 'accept'), picked.has(c.id) ? choiceBody(c) : {}))) break;
   }
   button.disabled = false;
+  if (button.hidden) $('cap').focus();   // inbox zero: the capture box is next
 }
 
 const picked = new Map();
@@ -4259,6 +4309,7 @@ let items = [];
 let active = 0;
 let timer = null;
 let seq = 0;
+let mode = 'search';   // 'capture': quick capture from anywhere (key c)
 
 export function init(viewList, askHandler) {
   views = viewList;
@@ -4267,17 +4318,20 @@ export function init(viewList, askHandler) {
 
 export const isOpen = () => !!root;
 
-export function open() {
+export function open(how) {
   if (root) return;
+  mode = how === 'capture' ? 'capture' : 'search';
   opener = document.activeElement;
+  const capturing = mode === 'capture';
   const input = el('input', {
     id: 'pal-q', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'pal-list',
-    'aria-label': 'Search or run a command', placeholder: 'search tasks, logs, decisions… or type a command',
-    oninput: () => schedule(input.value), onkeydown: keys,
+    'aria-label': capturing ? 'Capture a note' : 'Search or run a command', maxlength: capturing ? '300' : null,
+    placeholder: capturing ? 'capture a task, idea or link… enter to file' : 'search tasks, logs, decisions… or type a command',
+    oninput: () => (capturing ? show(input.value.trim(), []) : schedule(input.value)), onkeydown: keys,
   });
   root = el('div', { class: 'pal-backdrop', onclick: (e) => { if (e.target === root) close(); } },
-    el('div', { class: 'pal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Search' },
-      el('div', { class: 'pal-head' }, el('span', { class: 'pal-mark', 'aria-hidden': 'true' }, '⌘'), input,
+    el('div', { class: 'pal', role: 'dialog', 'aria-modal': 'true', 'aria-label': capturing ? 'Quick capture' : 'Search' },
+      el('div', { class: 'pal-head' }, el('span', { class: 'pal-mark', 'aria-hidden': 'true' }, capturing ? '›' : '⌘'), input,
         el('span', { class: 'pal-esc', 'aria-hidden': 'true' }, 'ESC')),
       el('ul', { class: 'pal-list', id: 'pal-list', role: 'listbox' })));
   document.body.append(root);
@@ -4290,6 +4344,8 @@ export function close() {
   root.remove();
   root = null;
   clearTimeout(timer);
+  pending = null;
+  seq++;   // results of a search still in flight are dropped
   if (opener && opener.focus) opener.focus();
 }
 
@@ -4321,7 +4377,8 @@ function commands(q) {
   return [
     ...go,
     { type: 'ask', label: 'Ask: ' + q, hint: 'answer from the brain', run: () => onAsk(q) },
-    { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox', run: () => act('api/captures', { text: q }).then(() => { location.hash = '#inbox'; }) },
+    { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox',
+      run: () => act('api/captures', { text: q }).then((ok) => { if (ok && mode === 'search') location.hash = '#inbox'; }) },
   ];
 }
 
@@ -4336,18 +4393,20 @@ function show(q, results, error) {
   // Text that names a screen ("system", "go inbox") puts that screen first.
   const cmds = commands(q);
   const named = q && cmds.filter((c) => c.type === 'go' && c.label.toLowerCase().replace('go to ', '').startsWith(q.toLowerCase().replace(/^go( to)? /, '')));
-  items = q ? (named.length ? [...named, ...found, ...cmds.filter((c) => !named.includes(c))] : [...found, ...cmds]) : cmds;
+  if (mode === 'capture') items = q ? cmds.filter((c) => c.type === 'capture') : [];
+  else items = q ? (named.length ? [...named, ...found, ...cmds.filter((c) => !named.includes(c))] : [...found, ...cmds]) : cmds;
   active = 0;
   const list = root.querySelector('#pal-list');
   list.replaceChildren(
     ...(error ? [el('li', { class: 'pal-none' }, 'search failed: ' + error)] : []),
-    ...(q && !found.length && !error ? [el('li', { class: 'pal-none' }, 'no match · enter to ask, or capture it')] : []),
+    ...(mode === 'search' && q && !found.length && !error ? [el('li', { class: 'pal-none' }, 'no match · enter to ask, or capture it')] : []),
+    ...(mode === 'capture' && !q ? [el('li', { class: 'pal-none' }, 'goes to the inbox; Rami suggests where it belongs')] : []),
     ...items.map((it, i) => el('li', {
       class: 'pal-item', role: 'option', id: 'pal-' + i, 'aria-selected': String(i === active),
       onclick: () => run(i), onmousemove: () => highlight(i),
     }, el('span', { class: 'pal-type' }, it.type), el('span', { class: 'pal-label' }, it.label),
       el('span', { class: 'pal-hint' }, it.hint || ''))));
-  if (q && !found.length && !error) active = items.findIndex((it) => it.type === 'ask');
+  if (mode === 'search' && q && !found.length && !error) active = items.findIndex((it) => it.type === 'ask');
   highlight(active);
 }
 
@@ -4373,6 +4432,12 @@ function keys(e) {
   else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(active - 1); }
   else if (e.key === 'Enter') {
     e.preventDefault();
+    if (mode === 'capture') {   // file exactly what is in the box; nothing if it is empty
+      const text = e.target.value.trim();
+      close();
+      if (text) act('api/captures', { text });
+      return;
+    }
     // Enter before the search came back: wait for it, then run the top item.
     if (pending) (pending.promise || search(pending.query)).then(() => run(active));
     else run(active);
@@ -4583,7 +4648,7 @@ export function update() {
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/system.js" 644 <<'__BRAIN_EOF__'
 // System: is the brain healthy, and what has it been doing.
-import { $, el, api, act, panelHead, shortWhen, keepFocus, setStatusLine } from './core.js';
+import { $, el, api, act, panelHead, shortWhen, keepFocus, setStatusLine, LOOKS, getLook, setLook } from './core.js';
 
 const REFRESH_MS = 30000;
 let status = null;
@@ -4653,6 +4718,12 @@ function render() {
       el('div', { class: 'setting' },
         el('span', { class: 'setting-text' }, el('b', {}, 'Notifications'), el('span', {}, 'macOS banners for things the agent finds')),
         toggle('NOTIFY', s.config.NOTIFY === 'on', 'Notifications')),
+      el('div', { class: 'setting' },
+        el('span', { class: 'setting-text' }, el('b', {}, 'Look'), el('span', {}, 'auto follows the system; kept in this browser')),
+        el('div', { class: 'seg-keys seg-keys-4', role: 'group', 'aria-label': 'Look' }, LOOKS.map(([id, label]) => el('button', {
+          class: 'st', type: 'button', 'aria-pressed': String(getLook() === id), 'data-fk': 'look:' + id,
+          onclick: () => { setLook(id); keepFocus(render); },
+        }, label)))),
       el('div', { class: 'setting' },
         el('span', { class: 'setting-text' }, el('b', {}, 'Agent model'), el('span', {}, 'used by the background agent and Ask')),
         el('div', { class: 'seg-keys', role: 'group', 'aria-label': 'Agent model' }, models.map((m) => el('button', {
@@ -4761,6 +4832,11 @@ function layout(nodes, edges) {
       a.vx *= 0.5; a.vy *= 0.5;
     }
   }
+  // Stretch the result to use the whole canvas.
+  const xs = [...p.values()].map((a) => a.x), ys = [...p.values()].map((a) => a.y);
+  const fit = (v, lo, hi) => (hi - lo < 1 ? 50 : PAD + ((v - lo) / (hi - lo)) * (100 - 2 * PAD));
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  for (const a of p.values()) { a.x = fit(a.x, x0, x1); a.y = fit(a.y, y0, y1); }
   return p;
 }
 
@@ -4789,13 +4865,15 @@ function render() {
     return line;
   }));
   const canvas = $('graph-canvas');
+  canvas.classList.toggle('is-narrow', canvas.clientWidth < 600);
   canvas.querySelectorAll('.gnode').forEach((n) => n.remove());
   for (const n of data.nodes) {
     const p = pos.get(n.id);
     const s = size(n);
     canvas.append(el('button', {
-      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') + (picked && !near.has(n.id) ? ' is-far' : ''),
-      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked),
+      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') +
+        (picked && !near.has(n.id) ? ' is-far' : '') + (p.x < 25 ? ' gnode-l' : p.x > 75 ? ' gnode-r' : ''),
+      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked), title: n.label,
       'aria-label': n.kind + ': ' + n.label, style: { left: p.x + '%', top: p.y + '%' },
       onclick: () => { picked = n.id; keepFocus(render); },
     }, el('span', { class: 'gdot', style: { width: s + 'px', height: s + 'px' } }),
@@ -4804,14 +4882,20 @@ function render() {
   renderSide();
 }
 
+function focusNode(id) {
+  const btn = document.querySelector('[data-fk="g:' + CSS.escape(id) + '"]');
+  if (btn) btn.focus({ preventScroll: true });
+}
+
 function describe(n) {
   if (n.kind === 'task') {
     const t = store.data && store.data.tasks.find((x) => x.slug === n.slug);
     return t ? (t.next ? 'Next: ' + t.next : t.goal || '') : '';
   }
   if (n.kind === 'decision') return n.date + ' · ' + n.decision;
-  const ts = neighbours(n.id).filter((x) => x.kind === 'project');
-  return ts.length + ' open task' + (ts.length === 1 ? '' : 's') + ' in this repo.';
+  const k = neighbours(n.id).filter((x) => x.kind === 'project').length;
+  const tasks = k + ' open task' + (k === 1 ? '' : 's');
+  return n.label === 'unfiled' ? tasks + ' with no linked session yet.' : tasks + ' in this repo.';
 }
 
 function renderSide() {
@@ -4826,7 +4910,8 @@ function renderSide() {
     el('p', { class: 'goal' }, describe(n)),
     el('h3', { class: 'label' }, 'linked'),
     el('div', { class: 'glinks' }, links.length ? links.map((m) => el('button', {
-      class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id, onclick: () => { picked = m.id; keepFocus(render); },
+      class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id,
+      onclick: () => { picked = m.id; render(); focusNode(m.id); },
     }, '→ ' + m.label)) : el('span', { class: 'none' }, 'none')),
     el('span', { class: 'spacer' }),
     n.kind === 'task' ? el('a', { class: 'btn-key gside-open', href: '#today/' + encodeURIComponent(n.slug) }, 'OPEN IN TODAY') : null,
@@ -4834,6 +4919,14 @@ function renderSide() {
   ].filter(Boolean));
 }
 
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/look.js" 644 <<'__BRAIN_EOF__'
+// Runs before the page paints (plain script in <head>), so a saved look
+// does not flash the default first. Storage may be unavailable: ignore.
+try {
+  var look = localStorage.getItem('brain.look');
+  if (look === 'a' || look === 'b' || look === 'c') document.documentElement.dataset.dir = look;
+} catch (e) { /* default look */ }
 __BRAIN_EOF__
 put_file "$BRAIN/bin/brain" 755 <<'__BRAIN_EOF__'
 #!/bin/bash
@@ -5062,7 +5155,7 @@ Nothing secret belongs here: no tokens, credentials or customer data.
 (127.0.0.1:7477) and opens the brain page. It keeps running until you press
 Ctrl-C in its terminal, and refreshes every 10 seconds, so work recorded by
 Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
-Cmd-K (or /) searches.
+Cmd-K (or /) searches; c captures a note from any screen.
 
 - **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
   task's log, a new task, or a reminder) and you can change that before
@@ -5077,7 +5170,8 @@ Cmd-K (or /) searches.
 - **Projects (5):** tasks grouped by the repo their sessions ran in, in
   columns by state; a card opens Today filtered to that project.
 - **System (6):** health checks (background job, last tick, agent, hooks,
-  git), the notifications switch and agent model, and 24 hours of activity.
+  git), the notifications switch, agent model, the page's look (auto, light,
+  dark, steel: the design's three directions), and 24 hours of activity.
 
 Each run uses a new secret key embedded in the page, so other websites
 cannot read or change your brain through it.

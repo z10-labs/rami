@@ -1,5 +1,5 @@
 // System: is the brain healthy, and what has it been doing.
-import { $, el, api, act, panelHead, shortWhen, keepFocus, setStatusLine } from './core.js';
+import { $, el, api, act, panelHead, shortWhen, keepFocus, setStatusLine, LOOKS, getLook, setLook } from './core.js';
 
 const REFRESH_MS = 30000;
 let status = null;
@@ -69,6 +69,12 @@ function render() {
       el('div', { class: 'setting' },
         el('span', { class: 'setting-text' }, el('b', {}, 'Notifications'), el('span', {}, 'macOS banners for things the agent finds')),
         toggle('NOTIFY', s.config.NOTIFY === 'on', 'Notifications')),
+      el('div', { class: 'setting' },
+        el('span', { class: 'setting-text' }, el('b', {}, 'Look'), el('span', {}, 'auto follows the system; kept in this browser')),
+        el('div', { class: 'seg-keys seg-keys-4', role: 'group', 'aria-label': 'Look' }, LOOKS.map(([id, label]) => el('button', {
+          class: 'st', type: 'button', 'aria-pressed': String(getLook() === id), 'data-fk': 'look:' + id,
+          onclick: () => { setLook(id); keepFocus(render); },
+        }, label)))),
       el('div', { class: 'setting' },
         el('span', { class: 'setting-text' }, el('b', {}, 'Agent model'), el('span', {}, 'used by the background agent and Ask')),
         el('div', { class: 'seg-keys', role: 'group', 'aria-label': 'Agent model' }, models.map((m) => el('button', {

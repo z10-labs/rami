@@ -124,7 +124,7 @@ Nothing secret belongs here: no tokens, credentials or customer data.
 (127.0.0.1:7477) and opens the brain page. It keeps running until you press
 Ctrl-C in its terminal, and refreshes every 10 seconds, so work recorded by
 Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
-Cmd-K (or /) searches.
+Cmd-K (or /) searches; c captures a note from any screen.
 
 - **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
   task's log, a new task, or a reminder) and you can change that before
@@ -139,7 +139,8 @@ Cmd-K (or /) searches.
 - **Projects (5):** tasks grouped by the repo their sessions ran in, in
   columns by state; a card opens Today filtered to that project.
 - **System (6):** health checks (background job, last tick, agent, hooks,
-  git), the notifications switch and agent model, and 24 hours of activity.
+  git), the notifications switch, agent model, the page's look (auto, light,
+  dark, steel: the design's three directions), and 24 hours of activity.
 
 Each run uses a new secret key embedded in the page, so other websites
 cannot read or change your brain through it.

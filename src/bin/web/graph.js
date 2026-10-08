@@ -81,6 +81,11 @@ function layout(nodes, edges) {
       a.vx *= 0.5; a.vy *= 0.5;
     }
   }
+  // Stretch the result to use the whole canvas.
+  const xs = [...p.values()].map((a) => a.x), ys = [...p.values()].map((a) => a.y);
+  const fit = (v, lo, hi) => (hi - lo < 1 ? 50 : PAD + ((v - lo) / (hi - lo)) * (100 - 2 * PAD));
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  for (const a of p.values()) { a.x = fit(a.x, x0, x1); a.y = fit(a.y, y0, y1); }
   return p;
 }
 
@@ -109,13 +114,15 @@ function render() {
     return line;
   }));
   const canvas = $('graph-canvas');
+  canvas.classList.toggle('is-narrow', canvas.clientWidth < 600);
   canvas.querySelectorAll('.gnode').forEach((n) => n.remove());
   for (const n of data.nodes) {
     const p = pos.get(n.id);
     const s = size(n);
     canvas.append(el('button', {
-      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') + (picked && !near.has(n.id) ? ' is-far' : ''),
-      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked),
+      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') +
+        (picked && !near.has(n.id) ? ' is-far' : '') + (p.x < 25 ? ' gnode-l' : p.x > 75 ? ' gnode-r' : ''),
+      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked), title: n.label,
       'aria-label': n.kind + ': ' + n.label, style: { left: p.x + '%', top: p.y + '%' },
       onclick: () => { picked = n.id; keepFocus(render); },
     }, el('span', { class: 'gdot', style: { width: s + 'px', height: s + 'px' } }),
@@ -124,14 +131,20 @@ function render() {
   renderSide();
 }
 
+function focusNode(id) {
+  const btn = document.querySelector('[data-fk="g:' + CSS.escape(id) + '"]');
+  if (btn) btn.focus({ preventScroll: true });
+}
+
 function describe(n) {
   if (n.kind === 'task') {
     const t = store.data && store.data.tasks.find((x) => x.slug === n.slug);
     return t ? (t.next ? 'Next: ' + t.next : t.goal || '') : '';
   }
   if (n.kind === 'decision') return n.date + ' · ' + n.decision;
-  const ts = neighbours(n.id).filter((x) => x.kind === 'project');
-  return ts.length + ' open task' + (ts.length === 1 ? '' : 's') + ' in this repo.';
+  const k = neighbours(n.id).filter((x) => x.kind === 'project').length;
+  const tasks = k + ' open task' + (k === 1 ? '' : 's');
+  return n.label === 'unfiled' ? tasks + ' with no linked session yet.' : tasks + ' in this repo.';
 }
 
 function renderSide() {
@@ -146,7 +159,8 @@ function renderSide() {
     el('p', { class: 'goal' }, describe(n)),
     el('h3', { class: 'label' }, 'linked'),
     el('div', { class: 'glinks' }, links.length ? links.map((m) => el('button', {
-      class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id, onclick: () => { picked = m.id; keepFocus(render); },
+      class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id,
+      onclick: () => { picked = m.id; render(); focusNode(m.id); },
     }, '→ ' + m.label)) : el('span', { class: 'none' }, 'none')),
     el('span', { class: 'spacer' }),
     n.kind === 'task' ? el('a', { class: 'btn-key gside-open', href: '#today/' + encodeURIComponent(n.slug) }, 'OPEN IN TODAY') : null,

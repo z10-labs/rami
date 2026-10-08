@@ -406,6 +406,9 @@ check "weekday in the text sets the reminder day, 09:00 ($fri)" "echo '$fri' | g
 check "tomorrow at 4pm" "[ \"\$(wq 'call mum')\" = '$tom' ]"
 check "a time alone means today if still ahead" "wq stretch | grep -q ' 23:59 [01]$'"
 check "no time in the text means next workday 09:00" "wq 'the plants' | grep -q ' 09:00 '"
+"$B" capture "remind me to check the monitoring dashboard at 23:58" >/dev/null
+check "words that start like a day name are not days" "wq 'monitoring dashboard' | grep -q ' 23:58 [01]$'"
+"$B" capture-dismiss "$(capid 'monitoring dashboard')" >/dev/null
 "$B" capture-accept "$(capid 'rotate the key')" --kind remind >/dev/null
 check "accepting uses the time from the text" "grep -q '^- \[ \] $next_fri 09:00 | .*rotate the key' $HOME/brain/followups.md"
 for t in 'call mum' stretch 'the plants'; do "$B" capture-dismiss "$(capid "$t")" >/dev/null; done
@@ -511,7 +514,7 @@ check "serve prints a 127.0.0.1 URL" "echo \"$URL\" | grep -q '^http://127.0.0.1
 page="$(curl -s "$URL")"
 TOKEN="$(echo "$page" | sed -n 's/.*name="brain-token" content="\([0-9a-f]*\)".*/\1/p' | head -1)"
 check "page served with a per-run token" "[ \${#TOKEN} -ge 32 ]"
-check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
+check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js look.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
 check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
 api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"

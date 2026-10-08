@@ -13,7 +13,7 @@ export function mount(panel) {
       el('h1', { id: 'view-heading' }, 'inbox'),
       el('span', { class: 'panel-sub', id: 'inbox-sub' }),
       el('span', { class: 'spacer' }),
-      el('button', { class: 'btn-acc', type: 'button', id: 'process-all', onclick: processAll }, 'process all ↵')),
+      el('button', { class: 'btn-acc', type: 'button', id: 'process-all', 'data-fk': 'pall', onclick: processAll }, 'process all ↵')),
     el('div', { class: 'inbox' },
       el('form', { class: 'capture', onsubmit: capture },
         el('div', { class: 'capture-field' },
@@ -63,6 +63,7 @@ async function processAll() {
     if (!(await act(capPath(c.id, 'accept'), picked.has(c.id) ? choiceBody(c) : {}))) break;
   }
   button.disabled = false;
+  if (button.hidden) $('cap').focus();   // inbox zero: the capture box is next
 }
 
 const picked = new Map();

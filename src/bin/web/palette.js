@@ -11,6 +11,7 @@ let items = [];
 let active = 0;
 let timer = null;
 let seq = 0;
+let mode = 'search';   // 'capture': quick capture from anywhere (key c)
 
 export function init(viewList, askHandler) {
   views = viewList;
@@ -19,17 +20,20 @@ export function init(viewList, askHandler) {
 
 export const isOpen = () => !!root;
 
-export function open() {
+export function open(how) {
   if (root) return;
+  mode = how === 'capture' ? 'capture' : 'search';
   opener = document.activeElement;
+  const capturing = mode === 'capture';
   const input = el('input', {
     id: 'pal-q', autocomplete: 'off', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'pal-list',
-    'aria-label': 'Search or run a command', placeholder: 'search tasks, logs, decisions… or type a command',
-    oninput: () => schedule(input.value), onkeydown: keys,
+    'aria-label': capturing ? 'Capture a note' : 'Search or run a command', maxlength: capturing ? '300' : null,
+    placeholder: capturing ? 'capture a task, idea or link… enter to file' : 'search tasks, logs, decisions… or type a command',
+    oninput: () => (capturing ? show(input.value.trim(), []) : schedule(input.value)), onkeydown: keys,
   });
   root = el('div', { class: 'pal-backdrop', onclick: (e) => { if (e.target === root) close(); } },
-    el('div', { class: 'pal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Search' },
-      el('div', { class: 'pal-head' }, el('span', { class: 'pal-mark', 'aria-hidden': 'true' }, '⌘'), input,
+    el('div', { class: 'pal', role: 'dialog', 'aria-modal': 'true', 'aria-label': capturing ? 'Quick capture' : 'Search' },
+      el('div', { class: 'pal-head' }, el('span', { class: 'pal-mark', 'aria-hidden': 'true' }, capturing ? '›' : '⌘'), input,
         el('span', { class: 'pal-esc', 'aria-hidden': 'true' }, 'ESC')),
       el('ul', { class: 'pal-list', id: 'pal-list', role: 'listbox' })));
   document.body.append(root);
@@ -42,6 +46,8 @@ export function close() {
   root.remove();
   root = null;
   clearTimeout(timer);
+  pending = null;
+  seq++;   // results of a search still in flight are dropped
   if (opener && opener.focus) opener.focus();
 }
 
@@ -73,7 +79,8 @@ function commands(q) {
   return [
     ...go,
     { type: 'ask', label: 'Ask: ' + q, hint: 'answer from the brain', run: () => onAsk(q) },
-    { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox', run: () => act('api/captures', { text: q }).then(() => { location.hash = '#inbox'; }) },
+    { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox',
+      run: () => act('api/captures', { text: q }).then((ok) => { if (ok && mode === 'search') location.hash = '#inbox'; }) },
   ];
 }
 
@@ -88,18 +95,20 @@ function show(q, results, error) {
   // Text that names a screen ("system", "go inbox") puts that screen first.
   const cmds = commands(q);
   const named = q && cmds.filter((c) => c.type === 'go' && c.label.toLowerCase().replace('go to ', '').startsWith(q.toLowerCase().replace(/^go( to)? /, '')));
-  items = q ? (named.length ? [...named, ...found, ...cmds.filter((c) => !named.includes(c))] : [...found, ...cmds]) : cmds;
+  if (mode === 'capture') items = q ? cmds.filter((c) => c.type === 'capture') : [];
+  else items = q ? (named.length ? [...named, ...found, ...cmds.filter((c) => !named.includes(c))] : [...found, ...cmds]) : cmds;
   active = 0;
   const list = root.querySelector('#pal-list');
   list.replaceChildren(
     ...(error ? [el('li', { class: 'pal-none' }, 'search failed: ' + error)] : []),
-    ...(q && !found.length && !error ? [el('li', { class: 'pal-none' }, 'no match · enter to ask, or capture it')] : []),
+    ...(mode === 'search' && q && !found.length && !error ? [el('li', { class: 'pal-none' }, 'no match · enter to ask, or capture it')] : []),
+    ...(mode === 'capture' && !q ? [el('li', { class: 'pal-none' }, 'goes to the inbox; Rami suggests where it belongs')] : []),
     ...items.map((it, i) => el('li', {
       class: 'pal-item', role: 'option', id: 'pal-' + i, 'aria-selected': String(i === active),
       onclick: () => run(i), onmousemove: () => highlight(i),
     }, el('span', { class: 'pal-type' }, it.type), el('span', { class: 'pal-label' }, it.label),
       el('span', { class: 'pal-hint' }, it.hint || ''))));
-  if (q && !found.length && !error) active = items.findIndex((it) => it.type === 'ask');
+  if (mode === 'search' && q && !found.length && !error) active = items.findIndex((it) => it.type === 'ask');
   highlight(active);
 }
 
@@ -125,6 +134,12 @@ function keys(e) {
   else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(active - 1); }
   else if (e.key === 'Enter') {
     e.preventDefault();
+    if (mode === 'capture') {   // file exactly what is in the box; nothing if it is empty
+      const text = e.target.value.trim();
+      close();
+      if (text) act('api/captures', { text });
+      return;
+    }
     // Enter before the search came back: wait for it, then run the top item.
     if (pending) (pending.promise || search(pending.query)).then(() => run(active));
     else run(active);

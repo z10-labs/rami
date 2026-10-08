@@ -109,7 +109,7 @@ export function keepFocus(render, fallback) {
   const index = key ? sameKind().indexOf(cur) : -1;
   render();
   if (!key || (document.activeElement && document.activeElement !== document.body)) return;
-  const usable = (n) => n && !n.disabled && n.isConnected;
+  const usable = (n) => n && !n.disabled && n.isConnected && n.offsetParent !== null;
   let n = document.querySelector('[data-fk="' + CSS.escape(key) + '"]');
   if (!usable(n)) {
     const peers = sameKind().filter(usable);
@@ -117,6 +117,19 @@ export function keepFocus(render, fallback) {
   }
   if (!usable(n) && fallback) n = document.querySelector(fallback);
   if (usable(n)) n.focus({ preventScroll: true });
+}
+
+// The look (design "directions"): auto follows the OS; a/b/c force one.
+// Kept per browser; storage can be unavailable, so every access is guarded.
+export const LOOKS = [['auto', 'auto'], ['a', 'light'], ['b', 'dark'], ['c', 'steel']];
+const LOOK_KEY = 'brain.look';
+export function getLook() {
+  try { return localStorage.getItem(LOOK_KEY) || 'auto'; } catch (e) { return 'auto'; }
+}
+export function setLook(look) {
+  if (look === 'auto') delete document.documentElement.dataset.dir;
+  else document.documentElement.dataset.dir = look;
+  try { localStorage.setItem(LOOK_KEY, look); } catch (e) { /* not remembered; still applied */ }
 }
 
 export const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;

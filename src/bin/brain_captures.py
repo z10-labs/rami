@@ -26,7 +26,8 @@ who why would yet look looks fine maybe should today tomorrow""".split())
 
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-DAY_RE = re.compile(r"\b(today|tonight|tomorrow|(mon|tue|wed|thu|fri|sat|sun)[a-z]*)\b", re.I)
+DAY_RE = re.compile(r"\b(today|tonight|tomorrow|mon(?:day)?|tue(?:s|sday)?|wed(?:s|nesday)?|"
+                    r"thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", re.I)
 TIME_RE = re.compile(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b|\b(\d{1,2}):(\d{2})\b", re.I)
 
 

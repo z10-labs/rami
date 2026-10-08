@@ -86,6 +86,7 @@ mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 @@PUT bin/web/projects.js 644@@
 @@PUT bin/web/system.js 644@@
 @@PUT bin/web/graph.js 644@@
+@@PUT bin/web/look.js 644@@
 @@PUT bin/brain 755@@
 @@PUT bin/session-start.sh 755@@
 @@PUT bin/session-end.sh 755@@
