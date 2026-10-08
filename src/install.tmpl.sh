@@ -65,9 +65,13 @@ keep_file() {
 }
 
 # ---------------------------------------------------------------- store
-mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin" "$BRAIN/.state"
+mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 
 @@PUT bin/brain.py 755@@
+@@PUT bin/brain_web.py 644@@
+@@PUT bin/web/index.html 644@@
+@@PUT bin/web/app.css 644@@
+@@PUT bin/web/app.js 644@@
 @@PUT bin/brain 755@@
 @@PUT bin/session-start.sh 755@@
 @@PUT bin/session-end.sh 755@@

@@ -38,6 +38,7 @@ From a terminal:
 
 ```
 ~/brain/bin/brain board            # open tasks, follow-ups, inbox
+~/brain/bin/brain serve --open     # today's tasks in the browser (127.0.0.1:7477, Ctrl-C to stop)
 ~/brain/bin/brain show SLUG
 ~/brain/bin/brain tick --dry-run   # what the next tick would do, without doing it
 ~/brain/bin/brain tick             # run a tick now
@@ -110,3 +111,15 @@ Run `~/brain/bin/install-brain.sh --uninstall`, or do these steps by hand:
 `~/brain` stays as it is. Delete it yourself only if you want the data gone.
 
 Nothing secret belongs here: no tokens, credentials or customer data.
+
+## Web page
+
+`~/brain/bin/brain serve --open` starts a small server on this machine only
+(127.0.0.1:7477) and opens the Today page: open tasks and tasks finished
+today, each with its Goal, Direction, Next, follow-ups, links and the full
+log. From the page you can change a task's status, post an update and tick a
+follow-up; those entries are logged as "you". The page refreshes every 10
+seconds, so work recorded by Claude sessions and the agent shows up on its
+own. It keeps running until you press Ctrl-C in its terminal. Each run uses
+a new secret key embedded in the page, so other websites cannot read or
+change your brain through it.

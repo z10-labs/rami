@@ -65,7 +65,7 @@ keep_file() {
 }
 
 # ---------------------------------------------------------------- store
-mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin" "$BRAIN/.state"
+mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 
 put_file "$BRAIN/bin/brain.py" 755 <<'__BRAIN_EOF__'
 #!/usr/bin/env python3
@@ -633,7 +633,7 @@ def find_followup(fid):
     raise BrainError("no follow-up with id %r" % fid)
 
 
-def tick_followup(fid, result=None):
+def tick_followup(fid, result=None, source=None):
     """Tick a follow-up; note the result on the task. Caller holds write lock."""
     lines, f = find_followup(fid)
     if f.done:
@@ -642,13 +642,15 @@ def tick_followup(fid, result=None):
     write_atomic(FOLLOWUPS, "\n".join(lines) + "\n")
     if result and os.path.isfile(task_path(f.slug)):
         t = load_task(f.slug)
-        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result))
+        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result), source=source)
         t.save()
     return f
 
 
-def log_source(session=None):
+def log_source(session=None, source=None):
     """Heading source for a log entry: the session it came from, else background."""
+    if source:
+        return source
     sid = session
     if not sid and not is_agent_run():
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -679,14 +681,14 @@ def block_time(block, last=False):
     return parse_ts("%s %s" % (m.group(1), hm)) if m else None
 
 
-def add_log(t, text, when=None, session=None):
+def add_log(t, text, when=None, session=None, source=None):
     """Add one line to the task's Log under the heading for its day and source.
 
     A normal entry is appended. A backdated one (when < now) goes into the
     block for that day and source, or a new block placed in time order, so a
     summary written later still sits where the work happened."""
     at = when or now()
-    head = "### %s | %s" % (at.strftime(DAY), log_source(session))
+    head = "### %s | %s" % (at.strftime(DAY), log_source(session, source))
     item = "- %s %s" % (at.strftime("%H:%M"), one_line(text, LOG_LINE_MAX))
     blocks = log_blocks(t.section("Log") or [])
     backdated = when is not None and blocks and (block_time(blocks[-1], last=True) or at) > at
@@ -1598,7 +1600,8 @@ def change_note(label, new, old):
     return "%s: %s" % (label, new) + (" (was: %s)" % old if old and old != "TBD" else "")
 
 
-def cmd_set(slug, field, value):
+def set_field(slug, field, value, source=None):
+    """Change one field of a task and log the change. Raises BrainError."""
     field = field.lower()
     with write_lock():
         x = load_task(slug)
@@ -1634,13 +1637,20 @@ def cmd_set(slug, field, value):
         else:
             raise BrainError("field must be goal, direction, next, status, title or ticket")
         if note:
-            add_log(x, note)
+            add_log(x, note, source=source)
         x.touch()
         x.save()
+
+
+def cmd_set(slug, field, value):
+    set_field(slug, field, value)
     print("%s: %s updated" % (slug, field))
 
 
-def cmd_log(slug, text, session=None, at=None):
+def log_entry(slug, text, session=None, at=None, source=None):
+    """Add a line to a task's log. Raises BrainError."""
+    if not (text or "").strip():
+        raise BrainError("nothing to log")
     when = None
     if at:
         when = parse_ts(at)
@@ -1650,8 +1660,12 @@ def cmd_log(slug, text, session=None, at=None):
             raise BrainError("--at is in the future: %s" % at)
     with write_lock():
         x = load_task(slug)
-        add_log(x, text, when, session=session)
+        add_log(x, text, when, session=session, source=source)
         x.save()
+
+
+def cmd_log(slug, text, session=None, at=None):
+    log_entry(slug, text, session, at)
     print("%s: logged" % slug)
 
 
@@ -1868,6 +1882,8 @@ USAGE = """brain: the second brain command
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
   notify [--task SLUG] [--key KEY] MESSAGE
 
+  serve [--port N] [--open]     local web page (127.0.0.1 only): today's tasks, with actions
+
   transcript SESSION_ID         condensed tail of a session transcript (agent use)
   ask SESSION_ID QUESTION       ask an idle session via a forked headless resume (agent use)
 """
@@ -1958,6 +1974,12 @@ def main(argv):
         a = p.parse_args(rest)
         cmd_log(a.slug, a.text, a.session, a.at)
         return 0
+    if cmd == "serve":
+        p.add_argument("--port", type=int, default=7477)
+        p.add_argument("--open", action="store_true", help="open the page in a browser")
+        a = p.parse_args(rest)
+        import brain_web
+        return brain_web.serve(a.port, a.open, sys.modules[__name__])
     if cmd == "_migrate":
         for slug in migrate_tasks():
             print("migrated %s to the log format" % slug)
@@ -2034,6 +2056,783 @@ if __name__ == "__main__":
     except BrainError as e:
         sys.stderr.write("brain: %s\n" % e)
         sys.exit(1)
+__BRAIN_EOF__
+put_file "$BRAIN/bin/brain_web.py" 644 <<'__BRAIN_EOF__'
+"""brain serve: a local web page for today's tasks, with a few actions.
+
+Listens on 127.0.0.1 only. Every API call must carry the per-run token that
+is embedded in the page, come with this server's own Host header (blocks DNS
+rebinding) and, for writes, a JSON body from no foreign Origin (blocks CSRF).
+All writes go through the same functions as the `brain` command, so formats,
+locks and the task log stay consistent. Entries made here are filed as "you".
+"""
+import hmac
+import json
+import os
+import re
+import secrets
+import sys
+import webbrowser
+
+try:
+    from http.server import ThreadingHTTPServer as HTTPServer
+except ImportError:  # python < 3.7
+    from http.server import HTTPServer
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlsplit
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+ASSETS = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+}
+TOKEN_PLACEHOLDER = "__BRAIN_TOKEN__"
+MAX_BODY = 64 * 1024
+SOURCE = "you"
+FOLLOWUP_ID_RE = re.compile(r"^[0-9a-f]{4,6}$")
+ROUTES = [
+    (re.compile(r"^/api/tasks/([^/]+)/status$"), "status"),
+    (re.compile(r"^/api/tasks/([^/]+)/log$"), "log"),
+    (re.compile(r"^/api/followups/([^/]+)/done$"), "fdone"),
+]
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+       "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
+       "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+
+class HttpError(Exception):
+    def __init__(self, code, message):
+        Exception.__init__(self, message)
+        self.code = code
+
+
+# ---------------------------------------------------------------- state
+
+def session_info(core, sid, sessions):
+    s = sessions.get(sid) or {}
+    cwd = s.get("cwd", "")
+    return {"id": sid, "short": sid[:8], "folder": os.path.basename(cwd.rstrip("/")) if cwd else "",
+            "start": core.fmt(s["start"]) if s.get("start") else "",
+            "end": core.fmt(s["end"]) if s.get("end") else ""}
+
+
+def task_info(core, x, fus, sessions):
+    sess = [session_info(core, sid, sessions) for sid in x.get_list("sessions")]
+    folders = [s["folder"] for s in sess if s["folder"]]
+    return {
+        "slug": x.slug,
+        "title": x.get("title"),
+        "status": x.get("status") or "active",
+        "created": x.get("created"),
+        "updated": core.fmt(core.task_updated(x)),
+        "goal": x.text_of("Goal"),
+        "direction": x.text_of("Direction"),
+        "next": x.text_of("Next"),
+        "tickets": x.get_list("ticket"),
+        "project": folders[-1] if folders else "",
+        "sessions": sess,
+        "log": [{"at": core.fmt(w) if w else "", "source": src, "text": txt}
+                for w, src, txt in x.log_entries()],
+        "followups": [f.as_dict() for f in fus if f.slug == x.slug],
+    }
+
+
+def state(core):
+    """Open tasks, plus tasks finished today."""
+    t = core.now()
+    _, fus = core.load_followups()
+    sessions = core.load_sessions()
+    out = []
+    for x in core.all_tasks():
+        if x.get("status") == "done" and core.task_updated(x).date() != t.date():
+            continue
+        out.append(task_info(core, x, fus, sessions))
+    return {"now": core.fmt(t), "tasks": out}
+
+
+# ---------------------------------------------------------------- actions
+
+def require_task(core, slug):
+    if not core.slug_ok(slug) or not os.path.isfile(core.task_path(slug)):
+        raise HttpError(404, "no task %r" % slug)
+
+
+def act(core, kind, ident, body):
+    if kind == "status":
+        require_task(core, ident)
+        status = body.get("status")
+        if status not in core.STATUSES:
+            raise HttpError(400, "status must be one of %s" % ", ".join(core.STATUSES))
+        core.set_field(ident, "status", status, source=SOURCE)
+    elif kind == "log":
+        require_task(core, ident)
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HttpError(400, "write something to post")
+        core.log_entry(ident, text, source=SOURCE)
+    elif kind == "fdone":
+        if not FOLLOWUP_ID_RE.match(ident):
+            raise HttpError(404, "no follow-up %r" % ident)
+        result = body.get("result") or "done"
+        if not isinstance(result, str):
+            raise HttpError(400, "result must be text")
+        with core.write_lock():
+            core.tick_followup(ident, core.one_line(result, 200), source=SOURCE)
+
+
+# ---------------------------------------------------------------- http
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "brain"
+    sys_version = ""
+
+    # -- checks -------------------------------------------------------
+    def allowed_hosts(self):
+        port = self.server.server_address[1]
+        return ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+    def check_host(self):
+        if self.headers.get("Host", "") not in self.allowed_hosts():
+            raise HttpError(403, "wrong host")
+
+    def check_token(self):
+        given = self.headers.get("X-Brain-Token", "")
+        if not hmac.compare_digest(given.encode(), self.server.token.encode()):
+            raise HttpError(403, "missing or wrong token")
+
+    def check_origin(self):
+        origin = self.headers.get("Origin")
+        if origin and origin not in ["http://" + h for h in self.allowed_hosts()]:
+            raise HttpError(403, "cross-site request refused")
+
+    def read_json(self):
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            raise HttpError(415, "send application/json")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise HttpError(400, "bad Content-Length")
+        if length > MAX_BODY:
+            raise HttpError(413, "body too large")
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            raise HttpError(400, "body is not valid JSON")
+        if not isinstance(body, dict):
+            raise HttpError(400, "body must be a JSON object")
+        return body
+
+    # -- responses ----------------------------------------------------
+    def send(self, code, data, ctype):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", CSP)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, code, obj):
+        self.send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                  "application/json; charset=utf-8")
+
+    def fail(self, e):
+        if isinstance(e, HttpError):
+            self.send_json(e.code, {"ok": False, "error": str(e)})
+        elif isinstance(e, self.server.core.BrainError):
+            self.send_json(400, {"ok": False, "error": str(e)})
+        else:
+            sys.stderr.write("brain serve: %s: %s\n" % (type(e).__name__, e))
+            self.send_json(500, {"ok": False, "error": "internal error; see the serve terminal"})
+
+    # -- methods ------------------------------------------------------
+    def do_GET(self):
+        try:
+            self.check_host()
+            path = urlsplit(self.path).path
+            if path in ASSETS:
+                name, ctype = ASSETS[path]
+                with open(os.path.join(WEB_DIR, name), "rb") as f:
+                    data = f.read()
+                if name == "index.html":
+                    data = data.replace(TOKEN_PLACEHOLDER.encode(), self.server.token.encode())
+                return self.send(200, data, ctype)
+            if path == "/api/state":
+                self.check_token()
+                return self.send_json(200, state(self.server.core))
+            raise HttpError(404, "not found")
+        except Exception as e:  # every error becomes a JSON reply
+            self.fail(e)
+
+    def do_POST(self):
+        try:
+            self.check_host()
+            self.check_origin()
+            self.check_token()
+            path = urlsplit(self.path).path
+            for rx, kind in ROUTES:
+                m = rx.match(path)
+                if m:
+                    act(self.server.core, kind, m.group(1), self.read_json())
+                    return self.send_json(200, {"ok": True, "state": state(self.server.core)})
+            raise HttpError(404, "not found")
+        except Exception as e:
+            self.fail(e)
+
+    def log_message(self, fmt, *args):
+        if len(args) > 1 and str(args[1])[:1] in ("4", "5"):
+            sys.stderr.write("brain serve: %s\n" % (fmt % args))
+
+
+def serve(port, open_browser, core):
+    try:
+        httpd = HTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        raise core.BrainError("cannot listen on 127.0.0.1:%d (%s); try --port N" % (port, e))
+    httpd.token = secrets.token_hex(24)
+    httpd.core = core
+    url = "http://127.0.0.1:%d/" % httpd.server_address[1]
+    sys.stdout.write("brain serve: %s  (Ctrl-C to stop)\n" % url)
+    sys.stdout.flush()
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+    return 0
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/index.html" 644 <<'__BRAIN_EOF__'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="brain-token" content="__BRAIN_TOKEN__">
+<title>Second Brain</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="chassis">
+  <div class="frame">
+    <span class="screw tl" aria-hidden="true"></span><span class="screw tr" aria-hidden="true"></span>
+    <span class="screw bl" aria-hidden="true"></span><span class="screw br" aria-hidden="true"></span>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">SB—1</span>
+        <span class="brand-sub">second brain</span>
+      </div>
+      <div class="display" role="status" aria-live="polite">
+        <span class="led-wrap"><span class="led" id="led"></span><span id="conn">local</span></span>
+        <span id="counts"></span>
+        <span class="spacer"></span>
+        <span class="error" id="error" hidden></span>
+        <span id="clock"></span>
+      </div>
+    </header>
+
+    <nav class="rail" aria-label="Main navigation">
+      <button class="key is-on" type="button" aria-current="page">
+        <span class="key-top"><span class="key-k">1</span><span class="key-dot"></span></span>
+        <span class="key-label">Today</span>
+      </button>
+      <span class="spacer"></span>
+      <button class="key key-ink" type="button" id="refresh" aria-label="Refresh now">
+        <span class="key-k">↻</span>
+        <span class="key-label">refresh</span>
+      </button>
+    </nav>
+
+    <main class="panel" aria-labelledby="today-heading">
+      <div class="panel-head">
+        <span class="panel-num">01</span>
+        <h1 id="today-heading">today</h1>
+        <span class="panel-sub" id="sub"></span>
+      </div>
+      <div class="today">
+        <section class="list" aria-label="Tasks">
+          <ul id="tasks" class="rows"></ul>
+          <p id="empty" class="empty" hidden><span class="empty-big">nothing open.</span><span class="empty-sub">tasks appear here when a claude session starts real work</span></p>
+        </section>
+        <section class="detail" id="detail" aria-label="Task detail" hidden>
+          <div id="detail-body"></div>
+          <div class="block">
+            <h2 class="label">updates</h2>
+            <form class="composer" id="composer">
+              <label class="sr-only" for="upd">Post an update</label>
+              <input id="upd" name="upd" autocomplete="off" maxlength="300" placeholder="post an update…">
+              <button type="submit" class="btn-key">POST</button>
+            </form>
+            <ol class="updates" id="updates"></ol>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/app.css" 644 <<'__BRAIN_EOF__'
+/* Second Brain: Today screen. Tokens follow the Claude Design source
+   ("Second Brain.dc.html"): direction A for light, direction B for dark. */
+:root {
+  --chassis: #d4d3ce; --panel: #eeede9; --ink: #141414; --mute: #6f6d67; --line: #c2c0ba;
+  --acc: #ff4f12; --acc-dk: #c23a0a; --acc-ink: #fff; --acc2: #2a56ff;
+  --disp: #161616; --disp-ink: #efeee9; --key: #fafaf7; --key-ink: #141414; --led: #3ddc84;
+  --bad: #d92d20; --wait: #8a6d00;
+  --sans: 'Archivo', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  --fast: 80ms; --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chassis: #1e1e1e; --panel: #292929; --ink: #ecebe6; --mute: #93928c; --line: #3e3e3d;
+    --acc: #ff5a1f; --acc-dk: #a8360c; --acc-ink: #fff; --acc2: #6b86ff;
+    --disp: #0b0b0b; --disp-ink: #ffd23f; --key: #353534; --key-ink: #ecebe6; --led: #ffd23f;
+    --bad: #ff6b5e; --wait: #e0b84a;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--chassis); color: var(--ink); font-family: var(--sans); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--acc2); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.spacer { flex: 1; }
+[hidden] { display: none !important; }
+
+/* ---------------------------------------------------------------- frame */
+.chassis { min-height: 100vh; padding: 24px; display: flex; justify-content: center; }
+.frame {
+  position: relative; width: 100%; min-width: 0; max-width: 1480px; height: calc(100vh - 48px); min-height: 640px;
+  border-radius: 18px; padding: 18px; display: grid; gap: 14px;
+  grid-template-columns: 92px minmax(0, 1fr); grid-template-rows: 44px minmax(0, 1fr);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 30px 60px -24px rgba(0,0,0,.45), 0 0 0 1px var(--line);
+}
+.screw { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.tl { left: 7px; top: 7px; } .tr { right: 7px; top: 7px; } .bl { left: 7px; bottom: 7px; } .br { right: 7px; bottom: 7px; }
+
+.topbar { grid-column: 1 / -1; display: flex; gap: 14px; align-items: stretch; min-width: 0; }
+.brand { width: 92px; flex: none; display: flex; flex-direction: column; justify-content: center; }
+.brand-mark { font: 800 18px var(--sans); letter-spacing: -.02em; }
+.brand-sub { font: 500 9px var(--mono); letter-spacing: .12em; color: var(--mute); text-transform: uppercase; }
+.display {
+  flex: 1; min-width: 0; background: var(--disp); color: var(--disp-ink); border-radius: 6px;
+  display: flex; align-items: center; gap: 24px; padding: 0 16px; overflow: hidden; white-space: nowrap;
+  font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+}
+.led-wrap { display: flex; align-items: center; gap: 8px; flex: none; }
+.led { width: 7px; height: 7px; border-radius: 50%; background: var(--led); }
+.led.is-off { background: var(--bad); }
+.display .error { color: #ff8a7a; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* ---------------------------------------------------------------- rail keys */
+.rail { display: flex; flex-direction: column; gap: 12px; }
+.key {
+  height: 62px; border-radius: 7px; border: 1px solid var(--line); background: var(--key); color: var(--key-ink);
+  box-shadow: 0 3px 0 var(--line); display: flex; flex-direction: column; justify-content: space-between;
+  align-items: flex-start; padding: 9px 10px; transition: transform var(--fast), box-shadow var(--fast);
+}
+.key:active { transform: translateY(3px); box-shadow: 0 0 0 var(--line); }
+.key.is-on { background: var(--acc); color: var(--acc-ink); box-shadow: 0 1px 0 var(--acc-dk); transform: translateY(2px); border-color: transparent; }
+.key-ink { height: 74px; background: var(--ink); color: var(--panel); border-color: transparent; }
+.key-top { display: flex; width: 100%; justify-content: space-between; align-items: center; }
+.key-k { font: 600 18px var(--mono); }
+.key-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc-ink); }
+.key-label { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+
+/* ---------------------------------------------------------------- panel */
+.panel {
+  background: var(--panel); border-radius: 10px; min-width: 0; overflow: hidden; display: flex; flex-direction: column;
+  box-shadow: inset 0 0 0 1px var(--line), inset 0 2px 6px rgba(0,0,0,.06);
+}
+.panel-head { display: flex; align-items: baseline; gap: 14px; padding: 22px 28px 18px; border-bottom: 1px solid var(--line); }
+.panel-num { font: 600 11px var(--mono); color: var(--acc); }
+.panel-head h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
+.panel-sub { font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.today { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+.list { overflow: auto; padding: 8px 20px 20px; min-width: 0; }
+.detail { border-left: 1px solid var(--line); overflow: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+#detail-body { display: flex; flex-direction: column; gap: 20px; }
+
+/* ---------------------------------------------------------------- rows */
+.rows { list-style: none; margin: 0; padding: 0; }
+.row {
+  display: grid; grid-template-columns: 46px 30px minmax(0, 1fr); gap: 12px; align-items: start;
+  padding: 14px 8px; border-bottom: 1px dashed var(--line); border-radius: 6px; cursor: pointer;
+}
+.row:hover { background: color-mix(in srgb, var(--key) 55%, transparent); }
+.row.is-sel { background: var(--key); box-shadow: inset 3px 0 0 var(--acc); }
+.row.is-done { opacity: .55; }
+.row.is-done .row-title { text-decoration: line-through; }
+.row-time { font: 500 11px var(--mono); color: var(--mute); padding-top: 7px; }
+.check {
+  width: 28px; height: 28px; padding: 0; border-radius: 5px; border: 1px solid var(--line);
+  background: var(--key); color: var(--key-ink); box-shadow: 0 2px 0 var(--line); font: 600 13px var(--mono);
+}
+.check:active { transform: translateY(2px); box-shadow: none; }
+.check.is-on { background: var(--ink); color: var(--panel); }
+.row-main { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.row-title { font-size: 16px; font-weight: 600; text-wrap: pretty; }
+.meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font: 500 10px var(--mono); color: var(--mute); letter-spacing: .04em; }
+.meta .proj { color: var(--acc); font-weight: 600; }
+.meta .due { color: var(--acc); font-weight: 600; }
+.pill { font-weight: 600; letter-spacing: .1em; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--line); text-transform: uppercase; }
+.pill.active { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.pill.blocked { background: var(--bad); color: #fff; border-color: var(--bad); }
+.pill.waiting { color: var(--wait); border-color: currentColor; }
+.pill.done { color: var(--mute); }
+.empty { padding: 60px 8px; display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.empty-big { font-size: 44px; font-weight: 800; letter-spacing: -.03em; }
+.empty-sub { font: 500 11px var(--mono); letter-spacing: .1em; color: var(--mute); text-transform: uppercase; }
+
+/* ---------------------------------------------------------------- detail */
+.d-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.d-code { font: 600 11px var(--mono); color: var(--acc); }
+.d-where { font: 500 11px var(--mono); color: var(--mute); }
+.d-title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
+.statuses { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.st {
+  height: 34px; border-radius: 5px; border: 1px solid var(--line); background: var(--key); color: var(--key-ink);
+  box-shadow: 0 3px 0 var(--line); font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  transition: transform var(--fast), box-shadow var(--fast);
+}
+.st:hover { border-color: var(--ink); }
+.st[aria-pressed="true"] { background: var(--acc); color: var(--acc-ink); box-shadow: 0 1px 0 var(--acc-dk); transform: translateY(2px); border-color: transparent; }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; margin: 0; }
+.facts div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.facts dt, .label { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); margin: 0; }
+.facts dd { margin: 0; font: 500 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal { margin: 0; font-size: 15px; line-height: 1.55; text-wrap: pretty; }
+.block { display: flex; flex-direction: column; gap: 8px; }
+.prose { margin: 0; font-size: 14px; line-height: 1.5; text-wrap: pretty; white-space: pre-line; }
+.next { background: var(--disp); color: var(--disp-ink); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.next .label { color: var(--acc); }
+.next p { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.4; }
+.checks { list-style: none; margin: 0; padding: 0; }
+.ck { display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 0; font: 500 14px var(--sans); }
+.ck-box { width: 16px; height: 16px; flex: none; margin-top: 2px; border-radius: 3px; border: 1.5px solid var(--ink);
+  display: flex; align-items: center; justify-content: center; font: 600 10px var(--mono); color: var(--panel); }
+.ck.is-done .ck-box { background: var(--ink); }
+.ck.is-done .ck-text { text-decoration: line-through; opacity: .5; }
+.ck-due { font: 500 10px var(--mono); color: var(--mute); display: block; }
+.ck-due.is-due { color: var(--acc); font-weight: 600; }
+.none { font: 500 11px var(--mono); color: var(--mute); padding: 6px 0; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 4px; box-shadow: 0 2px 0 var(--line);
+  font: 500 11px var(--mono); padding: 5px 9px; text-decoration: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.chip:hover { border-color: var(--ink); color: var(--key-ink); }
+span.chip { box-shadow: none; background: transparent; }
+
+/* ---------------------------------------------------------------- updates */
+.composer { display: flex; gap: 8px; }
+.composer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: transparent; border-radius: 5px; padding: 8px 10px; font: 500 12px var(--mono); }
+.composer input::placeholder { color: inherit; opacity: .4; }
+.btn-key { border: 1px solid var(--line); background: var(--key); color: var(--key-ink); border-radius: 5px; box-shadow: 0 2px 0 var(--line); font: 600 10px var(--mono); padding: 0 12px; }
+.btn-key:active { transform: translateY(2px); box-shadow: none; }
+.btn-key:disabled { opacity: .5; cursor: default; }
+.updates { list-style: none; margin: 0; padding: 0; }
+.day { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); padding: 12px 0 2px; border-bottom: 1px solid var(--line); }
+.upd { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 7px 0; }
+.upd-who { display: flex; flex-direction: column; gap: 2px; font: 500 10px var(--mono); color: var(--mute); }
+.upd-who b { font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.upd-who b.you { color: var(--acc); }
+.upd-who b.session { color: var(--acc2); }
+.upd-text { font-size: 14px; line-height: 1.45; text-wrap: pretty; overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- responsive */
+@media (max-width: 980px) {
+  .frame { height: auto; min-height: calc(100vh - 48px); }
+  .today { grid-template-columns: 1fr; }
+  .detail { border-left: 0; border-top: 1px solid var(--line); overflow: visible; }
+  .list { overflow: visible; }
+}
+@media (max-width: 640px) {
+  .chassis { padding: 16px 0; }
+  .frame { border-radius: 0; padding: 12px 16px; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; box-shadow: none; }
+  .screw { display: none; }
+  .topbar { flex-direction: column; gap: 8px; }
+  .brand { width: auto; flex-direction: row; align-items: baseline; gap: 10px; }
+  .display { height: 36px; gap: 14px; }
+  .rail { flex-direction: row; }
+  .rail .key { flex: 1; height: 48px; }
+  .rail .spacer { display: none; }
+  .panel-head { padding: 18px 16px 14px; flex-wrap: wrap; }
+  .list { padding: 4px 8px 12px; }
+  .detail { padding: 18px 16px; }
+  .row { grid-template-columns: 30px minmax(0, 1fr); }
+  .row-time { display: none; }
+  .statuses { grid-template-columns: repeat(2, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+  .key.is-on, .st[aria-pressed="true"], .key:active, .check:active, .btn-key:active { transform: none; }
+}
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/app.js" 644 <<'__BRAIN_EOF__'
+// Second Brain: Today screen. Talks to `brain serve` on 127.0.0.1.
+// Everything from the brain is inserted as text (never as HTML).
+'use strict';
+
+const TOKEN = document.querySelector('meta[name="brain-token"]').content;
+const POLL_MS = 10000;
+const STATUSES = ['active', 'waiting', 'blocked', 'done'];
+const ORDER = { blocked: 0, active: 1, waiting: 2, done: 3 };
+const $ = (id) => document.getElementById(id);
+
+let data = null;
+let lastJson = '';
+let selected = decodeURIComponent(location.hash.slice(1)) || null;
+let busy = false;
+
+// ---------------------------------------------------------------- helpers
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === 'class') n.className = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    n.append(kid instanceof Node ? kid : String(kid));
+  }
+  return n;
+}
+
+const day = (ts) => (ts || '').slice(0, 10);
+const hm = (ts) => (ts || '').slice(11, 16);
+function shortWhen(ts) {
+  if (!ts) return '—';
+  return day(ts) === day(data.now) ? hm(ts) : ts.slice(5, 10) + ' ' + hm(ts);
+}
+function dayLabel(d) {
+  const dt = new Date(d + 'T12:00');
+  return isNaN(dt) ? d : dt.toLocaleDateString(undefined, { weekday: 'short', day: '2-digit', month: 'short' });
+}
+const openFollowups = (t) => t.followups.filter((f) => !f.done).sort((a, b) => a.due.localeCompare(b.due));
+const isDue = (f) => !f.done && f.due <= data.now;
+const sortedTasks = () => [...data.tasks].sort((a, b) =>
+  (ORDER[a.status] ?? 9) - (ORDER[b.status] ?? 9) || b.updated.localeCompare(a.updated));
+
+function whoOf(source) {
+  if (source === 'you') return { label: 'you', cls: 'you', sub: '' };
+  const m = /^session (\S+)(?: \((.*)\))?$/.exec(source);
+  if (m) return { label: 'session', cls: 'session', sub: m[1] + (m[2] ? ' · ' + m[2] : '') };
+  return { label: source || 'note', cls: 'bg', sub: '' };
+}
+
+// ---------------------------------------------------------------- api
+async function api(path, body) {
+  const opt = { headers: { 'X-Brain-Token': TOKEN } };
+  if (body !== undefined) {
+    opt.method = 'POST';
+    opt.headers['Content-Type'] = 'application/json';
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  let j = {};
+  try { j = await r.json(); } catch (e) { /* non-JSON error page */ }
+  if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  return j;
+}
+
+function setStatusLine(ok, message) {
+  $('led').classList.toggle('is-off', !ok);
+  $('conn').textContent = ok ? 'local · live' : 'offline';
+  const err = $('error');
+  err.hidden = !message;
+  err.textContent = message || '';
+}
+
+async function load() {
+  try {
+    const next = await api('api/state');
+    const json = JSON.stringify(next);
+    setStatusLine(true, '');
+    if (json === lastJson) return;
+    lastJson = json;
+    data = next;
+    render();
+  } catch (e) {
+    setStatusLine(false, 'brain serve not reachable: ' + e.message);
+  }
+}
+
+async function act(path, body) {
+  if (busy) return false;
+  busy = true;
+  try {
+    const j = await api(path, body);
+    data = j.state;
+    lastJson = JSON.stringify(data);
+    setStatusLine(true, '');
+    render();
+    return true;
+  } catch (e) {
+    setStatusLine(true, e.message);
+    return false;
+  } finally {
+    busy = false;
+  }
+}
+
+const taskPath = (slug, what) => 'api/tasks/' + encodeURIComponent(slug) + '/' + what;
+const setStatus = (slug, status) => act(taskPath(slug, 'status'), { status });
+
+// ---------------------------------------------------------------- render
+function render() {
+  const tasks = sortedTasks();
+  if (!tasks.some((t) => t.slug === selected)) selected = tasks.length ? tasks[0].slug : null;
+  const open = tasks.filter((t) => t.status !== 'done').length;
+  const due = tasks.reduce((n, t) => n + t.followups.filter(isDue).length, 0);
+  $('counts').textContent = open + ' open · ' + due + ' due';
+  $('sub').textContent = (tasks.length - open) + '/' + tasks.length + ' done · ' + dayLabel(day(data.now)) +
+    ' · refreshes every ' + POLL_MS / 1000 + 's';
+  $('tasks').replaceChildren(...tasks.map(row));
+  $('empty').hidden = tasks.length > 0;
+  renderDetail(tasks.find((t) => t.slug === selected));
+}
+
+function row(t) {
+  const done = t.status === 'done';
+  const next = openFollowups(t)[0];
+  const select = () => { selected = t.slug; history.replaceState(null, '', '#' + encodeURIComponent(t.slug)); render(); };
+  return el('li', {
+    class: 'row' + (t.slug === selected ? ' is-sel' : '') + (done ? ' is-done' : ''),
+    tabindex: '0', 'aria-current': t.slug === selected ? 'true' : null,
+    onclick: select,
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); } },
+  },
+    el('span', { class: 'row-time' }, shortWhen(t.updated)),
+    el('button', {
+      class: 'check' + (done ? ' is-on' : ''), type: 'button',
+      'aria-label': done ? 'Reopen ' + t.title : 'Mark ' + t.title + ' done',
+      onclick: (e) => { e.stopPropagation(); setStatus(t.slug, done ? 'active' : 'done'); },
+    }, done ? '✓' : ''),
+    el('div', { class: 'row-main' },
+      el('span', { class: 'row-title' }, t.title || t.slug),
+      el('div', { class: 'meta' },
+        el('span', { class: 'pill ' + t.status }, t.status),
+        t.project && el('span', { class: 'proj' }, t.project),
+        next && el('span', { class: isDue(next) ? 'due' : '' }, (isDue(next) ? 'due ' : 'next ') + shortWhen(next.due)),
+        el('span', { title: 'tickets and sessions' }, '↳ ' + (t.tickets.length + t.sessions.length)),
+        el('span', { title: 'log entries' }, '✎ ' + t.log.length))));
+}
+
+function renderDetail(t) {
+  $('detail').hidden = !t;
+  if (!t) return;
+  const fus = [...openFollowups(t), ...t.followups.filter((f) => f.done)];
+  const next = openFollowups(t)[0];
+  $('detail-body').replaceChildren(
+    el('div', { class: 'd-top' },
+      el('span', { class: 'd-code' }, t.slug),
+      el('span', { class: 'd-where' }, [t.project || 'no project', t.sessions.length + ' session' + (t.sessions.length === 1 ? '' : 's')].join(' · '))),
+    el('h2', { class: 'd-title' }, t.title || t.slug),
+    el('div', { class: 'statuses', role: 'group', 'aria-label': 'Status' },
+      STATUSES.map((s) => el('button', {
+        class: 'st', type: 'button', 'aria-pressed': String(t.status === s),
+        onclick: () => { if (t.status !== s) setStatus(t.slug, s); },
+      }, s))),
+    el('dl', { class: 'facts' },
+      el('div', {}, el('dt', {}, 'next check'), el('dd', {}, next ? shortWhen(next.due) : '—')),
+      el('div', {}, el('dt', {}, 'updated'), el('dd', {}, shortWhen(t.updated))),
+      el('div', {}, el('dt', {}, 'created'), el('dd', {}, t.created || '—'))),
+    t.goal && el('p', { class: 'goal' }, t.goal),
+    t.direction && el('div', { class: 'block' }, el('h3', { class: 'label' }, 'direction'), el('p', { class: 'prose' }, t.direction)),
+    t.next && el('div', { class: 'next' }, el('span', { class: 'label' }, 'next'), el('p', {}, t.next)),
+    el('div', { class: 'block' },
+      el('h3', { class: 'label' }, 'follow-ups · ' + openFollowups(t).length + ' open'),
+      fus.length ? el('ul', { class: 'checks' }, fus.map((f) => followup(f))) : el('span', { class: 'none' }, 'none')),
+    el('div', { class: 'block' },
+      el('h3', { class: 'label' }, 'links'),
+      (t.tickets.length + t.sessions.length) ? el('div', { class: 'chips' },
+        t.tickets.map(ticketChip),
+        t.sessions.map((s) => el('span', { class: 'chip', title: s.id + (s.end ? ' · ended ' + s.end : '') },
+          (s.folder || 'session') + ' · ' + s.short))) : el('span', { class: 'none' }, 'none linked')));
+  renderUpdates(t);
+}
+
+function followup(f) {
+  const due = isDue(f);
+  return el('li', {},
+    el('button', {
+      class: 'ck' + (f.done ? ' is-done' : ''), type: 'button', disabled: f.done,
+      'aria-label': f.done ? 'Done: ' + f.what : 'Tick off: ' + f.what,
+      onclick: () => act('api/followups/' + encodeURIComponent(f.id) + '/done', { result: 'done (ticked on the page)' }),
+    },
+      el('span', { class: 'ck-box', 'aria-hidden': 'true' }, f.done ? '✓' : ''),
+      el('span', {},
+        el('span', { class: 'ck-text' }, f.what),
+        el('span', { class: 'ck-due' + (due ? ' is-due' : '') }, (f.done ? 'was due ' : due ? 'due ' : 'check ') + shortWhen(f.due)))));
+}
+
+function ticketChip(t) {
+  if (/^https?:\/\//i.test(t)) {
+    const label = t.replace(/^https?:\/\/(www\.)?/i, '').replace(/#.*$/, '');
+    return el('a', { class: 'chip', href: t, target: '_blank', rel: 'noopener noreferrer', title: t }, label);
+  }
+  return el('span', { class: 'chip' }, t);
+}
+
+function renderUpdates(t) {
+  const items = [];
+  let lastDay = '';
+  for (const e of [...t.log].reverse()) {
+    if (day(e.at) !== lastDay) {
+      lastDay = day(e.at);
+      items.push(el('li', { class: 'day' }, dayLabel(lastDay)));
+    }
+    const who = whoOf(e.source);
+    items.push(el('li', { class: 'upd' },
+      el('span', { class: 'upd-who' }, el('b', { class: who.cls }, who.label), who.sub && el('span', {}, who.sub), el('span', {}, hm(e.at))),
+      el('span', { class: 'upd-text' }, e.text)));
+  }
+  $('updates').replaceChildren(...items);
+}
+
+// ---------------------------------------------------------------- wiring
+$('composer').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = $('upd');
+  const text = input.value.trim();
+  if (!text || !selected) return;
+  const button = e.target.querySelector('button');
+  button.disabled = true;
+  if (await act(taskPath(selected, 'log'), { text })) input.value = '';
+  button.disabled = false;
+  input.focus();
+});
+$('refresh').addEventListener('click', () => { lastJson = ''; load(); });
+window.addEventListener('hashchange', () => { selected = decodeURIComponent(location.hash.slice(1)); if (data) render(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+
+function tickClock() {
+  $('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+tickClock();
+setInterval(tickClock, 15000);
+setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
+load();
 __BRAIN_EOF__
 put_file "$BRAIN/bin/brain" 755 <<'__BRAIN_EOF__'
 #!/bin/bash
@@ -2176,6 +2975,7 @@ From a terminal:
 
 ```
 ~/brain/bin/brain board            # open tasks, follow-ups, inbox
+~/brain/bin/brain serve --open     # today's tasks in the browser (127.0.0.1:7477, Ctrl-C to stop)
 ~/brain/bin/brain show SLUG
 ~/brain/bin/brain tick --dry-run   # what the next tick would do, without doing it
 ~/brain/bin/brain tick             # run a tick now
@@ -2248,6 +3048,18 @@ Run `~/brain/bin/install-brain.sh --uninstall`, or do these steps by hand:
 `~/brain` stays as it is. Delete it yourself only if you want the data gone.
 
 Nothing secret belongs here: no tokens, credentials or customer data.
+
+## Web page
+
+`~/brain/bin/brain serve --open` starts a small server on this machine only
+(127.0.0.1:7477) and opens the Today page: open tasks and tasks finished
+today, each with its Goal, Direction, Next, follow-ups, links and the full
+log. From the page you can change a task's status, post an update and tick a
+follow-up; those entries are logged as "you". The page refreshes every 10
+seconds, so work recorded by Claude sessions and the agent shows up on its
+own. It keeps running until you press Ctrl-C in its terminal. Each run uses
+a new secret key embedded in the page, so other websites cannot read or
+change your brain through it.
 __BRAIN_EOF__
 keep_file "$BRAIN/tasks/_template.md" <<'__BRAIN_EOF__'
 ---

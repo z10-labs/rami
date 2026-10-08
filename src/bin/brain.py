@@ -563,7 +563,7 @@ def find_followup(fid):
     raise BrainError("no follow-up with id %r" % fid)
 
 
-def tick_followup(fid, result=None):
+def tick_followup(fid, result=None, source=None):
     """Tick a follow-up; note the result on the task. Caller holds write lock."""
     lines, f = find_followup(fid)
     if f.done:
@@ -572,13 +572,15 @@ def tick_followup(fid, result=None):
     write_atomic(FOLLOWUPS, "\n".join(lines) + "\n")
     if result and os.path.isfile(task_path(f.slug)):
         t = load_task(f.slug)
-        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result))
+        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result), source=source)
         t.save()
     return f
 
 
-def log_source(session=None):
+def log_source(session=None, source=None):
     """Heading source for a log entry: the session it came from, else background."""
+    if source:
+        return source
     sid = session
     if not sid and not is_agent_run():
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -609,14 +611,14 @@ def block_time(block, last=False):
     return parse_ts("%s %s" % (m.group(1), hm)) if m else None
 
 
-def add_log(t, text, when=None, session=None):
+def add_log(t, text, when=None, session=None, source=None):
     """Add one line to the task's Log under the heading for its day and source.
 
     A normal entry is appended. A backdated one (when < now) goes into the
     block for that day and source, or a new block placed in time order, so a
     summary written later still sits where the work happened."""
     at = when or now()
-    head = "### %s | %s" % (at.strftime(DAY), log_source(session))
+    head = "### %s | %s" % (at.strftime(DAY), log_source(session, source))
     item = "- %s %s" % (at.strftime("%H:%M"), one_line(text, LOG_LINE_MAX))
     blocks = log_blocks(t.section("Log") or [])
     backdated = when is not None and blocks and (block_time(blocks[-1], last=True) or at) > at
@@ -1528,7 +1530,8 @@ def change_note(label, new, old):
     return "%s: %s" % (label, new) + (" (was: %s)" % old if old and old != "TBD" else "")
 
 
-def cmd_set(slug, field, value):
+def set_field(slug, field, value, source=None):
+    """Change one field of a task and log the change. Raises BrainError."""
     field = field.lower()
     with write_lock():
         x = load_task(slug)
@@ -1564,13 +1567,20 @@ def cmd_set(slug, field, value):
         else:
             raise BrainError("field must be goal, direction, next, status, title or ticket")
         if note:
-            add_log(x, note)
+            add_log(x, note, source=source)
         x.touch()
         x.save()
+
+
+def cmd_set(slug, field, value):
+    set_field(slug, field, value)
     print("%s: %s updated" % (slug, field))
 
 
-def cmd_log(slug, text, session=None, at=None):
+def log_entry(slug, text, session=None, at=None, source=None):
+    """Add a line to a task's log. Raises BrainError."""
+    if not (text or "").strip():
+        raise BrainError("nothing to log")
     when = None
     if at:
         when = parse_ts(at)
@@ -1580,8 +1590,12 @@ def cmd_log(slug, text, session=None, at=None):
             raise BrainError("--at is in the future: %s" % at)
     with write_lock():
         x = load_task(slug)
-        add_log(x, text, when, session=session)
+        add_log(x, text, when, session=session, source=source)
         x.save()
+
+
+def cmd_log(slug, text, session=None, at=None):
+    log_entry(slug, text, session, at)
     print("%s: logged" % slug)
 
 
@@ -1798,6 +1812,8 @@ USAGE = """brain: the second brain command
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
   notify [--task SLUG] [--key KEY] MESSAGE
 
+  serve [--port N] [--open]     local web page (127.0.0.1 only): today's tasks, with actions
+
   transcript SESSION_ID         condensed tail of a session transcript (agent use)
   ask SESSION_ID QUESTION       ask an idle session via a forked headless resume (agent use)
 """
@@ -1888,6 +1904,12 @@ def main(argv):
         a = p.parse_args(rest)
         cmd_log(a.slug, a.text, a.session, a.at)
         return 0
+    if cmd == "serve":
+        p.add_argument("--port", type=int, default=7477)
+        p.add_argument("--open", action="store_true", help="open the page in a browser")
+        a = p.parse_args(rest)
+        import brain_web
+        return brain_web.serve(a.port, a.open, sys.modules[__name__])
     if cmd == "_migrate":
         for slug in migrate_tasks():
             print("migrated %s to the log format" % slug)

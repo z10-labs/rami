@@ -347,6 +347,46 @@ assert any(s['session_id']=='$SID' and 'api-rate-limits' in s['tasks'] for s in 
 EOF"
 check "export to stdout" "$B export - | python3 -c 'import json,sys; json.load(sys.stdin)'"
 
+echo "== web: brain serve"
+"$B" new web-task-one "Web task one" --goal "Show it on the page" --next "Check the page" >/dev/null
+"$B" followup +1h web-task-one "Check the web page" >/dev/null
+"$B" serve --port 0 > "$WORK/serve.out" 2>&1 & srv=$!
+for i in $(seq 1 50); do grep -q '^brain serve: http' "$WORK/serve.out" 2>/dev/null && break; sleep 0.1; done
+URL="$(sed -n 's/^brain serve: \(http[^ ]*\).*/\1/p' "$WORK/serve.out" | head -1)"
+PORT="$(echo "$URL" | sed 's/.*:\([0-9]*\)\/.*/\1/')"
+check "serve prints a 127.0.0.1 URL" "echo \"$URL\" | grep -q '^http://127.0.0.1:[0-9]*/$'"
+page="$(curl -s "$URL")"
+TOKEN="$(echo "$page" | sed -n 's/.*name="brain-token" content="\([0-9a-f]*\)".*/\1/p' | head -1)"
+check "page served with a per-run token" "[ \${#TOKEN} -ge 32 ]"
+check "page assets served" "curl -sf ${URL}app.js >/dev/null && curl -sf ${URL}app.css >/dev/null"
+check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
+api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
+check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"
+check "state lists the task with goal, next, log and follow-ups" "[ \"\$(api ${URL}api/state)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out'))
+t=[x for x in d['tasks'] if x['slug']=='web-task-one'][0]
+assert t['goal']=='Show it on the page' and t['next']=='Check the page', t
+assert any(e['text']=='Task created' for e in t['log']), t['log']
+assert t['followups'][0]['what']=='Check the web page' and not t['followups'][0]['done']
+assert 'now' in d
+\""
+check "a foreign Host header is refused (DNS rebinding)" "[ \"\$(api -H 'Host: evil.example:$PORT' ${URL}api/state)\" = 403 ]"
+check "a cross-site Origin is refused" "[ \"\$(api -X POST -H 'Origin: https://evil.example' -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 403 ]"
+check "POST without the token is refused" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 403 ]"
+check "POST needs a JSON body" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H \"X-Brain-Token: $TOKEN\" -H 'Content-Type: text/plain' -d 'x' ${URL}api/tasks/web-task-one/status)\" = 415 ]"
+wf="$HOME/brain/tasks/web-task-one.md"
+check "status change from the page is saved and logged as you" "[ \"\$(api -X POST -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 200 ] && grep -q '^status: blocked' $wf && awk '/^### /{h=\$0} /Status: active -> blocked/{print h}' $wf | grep -q '| you\$'"
+check "bad status rejected" "[ \"\$(api -X POST -d '{\"status\":\"nope\"}' ${URL}api/tasks/web-task-one/status)\" = 400 ]"
+check "unknown task is 404" "[ \"\$(api -X POST -d '{\"status\":\"done\"}' ${URL}api/tasks/no-such-task/status)\" = 404 ]"
+check "update posted from the page lands in the log" "[ \"\$(api -X POST -d '{\"text\":\"Checked from the page\"}' ${URL}api/tasks/web-task-one/log)\" = 200 ] && grep -q 'Checked from the page' $wf"
+check "empty update rejected" "[ \"\$(api -X POST -d '{\"text\":\"  \"}' ${URL}api/tasks/web-task-one/log)\" = 400 ]"
+fid="$(api ${URL}api/state >/dev/null; python3 -c "import json;print([x for x in json.load(open('$WORK/api.out'))['tasks'] if x['slug']=='web-task-one'][0]['followups'][0]['id'])")"
+check "follow-up ticked from the page" "[ \"\$(api -X POST -d '{\"result\":\"looked fine\"}' ${URL}api/followups/$fid/done)\" = 200 ] && grep -q '\[x\] .*Check the web page' $HOME/brain/followups.md && grep -q 'looked fine' $wf"
+check "oversized body rejected" "[ \"\$(api -X POST --data-binary @<(python3 -c 'print(\"{\\\"text\\\":\\\"\" + \"x\"*70000 + \"\\\"}\")') ${URL}api/tasks/web-task-one/log)\" = 413 ]"
+check "server listens on 127.0.0.1 only" "! curl -s -m 2 http://\$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print \$1}'):$PORT/ >/dev/null 2>&1"
+kill $srv 2>/dev/null; wait $srv 2>/dev/null
+rm -f "$wf"
+
 echo "== tick lock"
 mkdir -p "$HOME/brain/.state/tick.lock"; sleep 300 & echo $! > "$HOME/brain/.state/tick.lock/pid"; holder=$!
 check "second tick refuses while locked" "$B tick --no-agent | grep -q 'another tick'"

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="brain-token" content="__BRAIN_TOKEN__">
+<title>Second Brain</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="chassis">
+  <div class="frame">
+    <span class="screw tl" aria-hidden="true"></span><span class="screw tr" aria-hidden="true"></span>
+    <span class="screw bl" aria-hidden="true"></span><span class="screw br" aria-hidden="true"></span>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">SB—1</span>
+        <span class="brand-sub">second brain</span>
+      </div>
+      <div class="display" role="status" aria-live="polite">
+        <span class="led-wrap"><span class="led" id="led"></span><span id="conn">local</span></span>
+        <span id="counts"></span>
+        <span class="spacer"></span>
+        <span class="error" id="error" hidden></span>
+        <span id="clock"></span>
+      </div>
+    </header>
+
+    <nav class="rail" aria-label="Main navigation">
+      <button class="key is-on" type="button" aria-current="page">
+        <span class="key-top"><span class="key-k">1</span><span class="key-dot"></span></span>
+        <span class="key-label">Today</span>
+      </button>
+      <span class="spacer"></span>
+      <button class="key key-ink" type="button" id="refresh" aria-label="Refresh now">
+        <span class="key-k">↻</span>
+        <span class="key-label">refresh</span>
+      </button>
+    </nav>
+
+    <main class="panel" aria-labelledby="today-heading">
+      <div class="panel-head">
+        <span class="panel-num">01</span>
+        <h1 id="today-heading">today</h1>
+        <span class="panel-sub" id="sub"></span>
+      </div>
+      <div class="today">
+        <section class="list" aria-label="Tasks">
+          <ul id="tasks" class="rows"></ul>
+          <p id="empty" class="empty" hidden><span class="empty-big">nothing open.</span><span class="empty-sub">tasks appear here when a claude session starts real work</span></p>
+        </section>
+        <section class="detail" id="detail" aria-label="Task detail" hidden>
+          <div id="detail-body"></div>
+          <div class="block">
+            <h2 class="label">updates</h2>
+            <form class="composer" id="composer">
+              <label class="sr-only" for="upd">Post an update</label>
+              <input id="upd" name="upd" autocomplete="off" maxlength="300" placeholder="post an update…">
+              <button type="submit" class="btn-key">POST</button>
+            </form>
+            <ol class="updates" id="updates"></ol>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>
