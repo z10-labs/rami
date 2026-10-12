@@ -13,7 +13,7 @@ in what sessions missed.
 
 | Path | What |
 |---|---|
-| `tasks/<slug>.md` | one file per task: Goal, Direction, Next (the current state), then a Log of everything that happened, grouped by session and never trimmed |
+| `tasks/<slug>.md` | one file per task: Goal, Direction, Work done (plain lines of what has been done, oldest first, never trimmed) and Next |
 | `archive/<yyyy>/` | done tasks, moved here 14 days after they finish |
 | `decisions.md` | big decisions, newest first |
 | `followups.md` | `- [ ] YYYY-MM-DD HH:MM \| slug \| what to check` |
@@ -27,9 +27,10 @@ in what sessions missed.
 
 Work normally in Claude Code (desktop app or CLI). At session start Claude sees
 the board. As soon as real work starts it links the session to a task or
-creates one, then logs what happens, big decisions and follow-ups, saying one
-line at most about it. After a linked session ends, the background agent adds
-a short summary of anything that session did that the log does not cover yet.
+creates one, then adds what gets done to the task's Work done, plus big
+decisions and follow-ups, saying one line at most about it. After a linked
+session ends, the background agent adds anything that session did that Work
+done does not cover yet.
 
 Ask things such as "what's on my board", "where was I on X", "what did we
 decide about Y", "remind me at 16:00 to …", or "X is done".
@@ -40,7 +41,7 @@ From a terminal:
 ~/brain/bin/brain board            # open tasks, follow-ups, inbox
 ~/brain/bin/brain serve --open     # the brain page in your browser (127.0.0.1:7477, Ctrl-C to stop)
 ~/brain/bin/brain capture "text"   # quick note; sorted later in the Inbox
-~/brain/bin/brain search "words"   # tasks, log lines, decisions, archive
+~/brain/bin/brain search "words"   # tasks, work done, decisions, archive
 ~/brain/bin/brain query "question" # answered from the brain by claude, read-only
 ~/brain/bin/brain projects         # tasks grouped by repo
 ~/brain/bin/brain status           # health: background job, last tick, agent, hooks, git
@@ -127,11 +128,11 @@ Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
 Cmd-K (or /) searches; c captures a note from any screen.
 
 - **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
-  task's log, a new task, or a reminder) and you can change that before
+  task's Work done, a new task, or a reminder) and you can change that before
   accepting. Reminders with no task and the brain's own messages are here too.
 - **Today (2):** open tasks and tasks finished today: Goal, Direction, Next,
-  follow-ups, links and the full log. Change status, post an update, tick a
-  follow-up. Your entries are logged as "you".
+  Work done, follow-ups and links. Change status, add to Work done, tick a
+  follow-up.
 - **Ask (3):** questions answered from your brain by claude (the agent's
   model), read-only, in about 15 seconds. Answers link to the tasks they used.
 - **Graph (4):** projects, open tasks and decisions, linked by repo, by
@@ -141,6 +142,10 @@ Cmd-K (or /) searches; c captures a note from any screen.
 - **System (6):** health checks (background job, last tick, agent, hooks,
   git), the notifications switch, agent model, the page's look (auto, light,
   dark, steel: the design's three directions), and 24 hours of activity.
+
+Notes from Rami (a failed deploy check, a stalled session) pop up on the page
+while it is open, and stay in the Inbox until you clear them there; notes older
+than 14 days are dropped.
 
 Each run uses a new secret key embedded in the page, so other websites
 cannot read or change your brain through it.

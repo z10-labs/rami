@@ -94,9 +94,12 @@ out="$(printf '{"session_id":"%s","cwd":"/w","transcript_path":"%s","hook_event_
 check "start hook logs a start line" "grep -q \"| start | $SID | /w | $TP\" $HOME/brain/sessions.log"
 check "board shows session id, task, follow-up and inbox" "echo \"\$out\" | grep -q $SID && echo \"\$out\" | grep -q api-rate-limits && echo \"\$out\" | grep -q 'Check gateway deploy' && echo \"\$out\" | grep -q 'Deploy check failed'"
 check "board asks to record work as soon as it starts" "echo \"\$out\" | grep -q 'As soon as' && echo \"\$out\" | grep -q 'brain log'"
-check "inbox cleared after being shown" "! grep -q 'Deploy check failed' $HOME/brain/inbox.md"
+check "a shown note stays in the inbox for the page" "grep -q 'Deploy check failed' $HOME/brain/inbox.md"
 out2="$(printf '{"session_id":"x2"}' | "$HOME/brain/bin/session-start.sh")"
 check "inbox not shown twice" "! echo \"\$out2\" | grep -q 'Deploy check failed'"
+printf -- '- 2020-01-01 09:00 |  | ancient note\n' >> "$HOME/brain/inbox.md"
+"$B" tick --no-agent >/dev/null
+check "the tick drops notes older than 14 days" "! grep -q 'ancient note' $HOME/brain/inbox.md && grep -q 'Deploy check failed' $HOME/brain/inbox.md"
 check "agent runs are ignored by start hook" "[ -z \"\$(printf '{\"session_id\":\"agent1\"}' | BRAIN_AGENT=1 $HOME/brain/bin/session-start.sh)\" ] && ! grep -q agent1 $HOME/brain/sessions.log"
 t0=$(python3 -c 'import time;print(time.time())')
 printf '{"session_id":"%s","cwd":"/w","transcript_path":"%s","hook_event_name":"SessionEnd","reason":"other"}' "$SID" "$TP" | "$HOME/brain/bin/session-end.sh"
@@ -119,9 +122,11 @@ for i in $(seq 1 45); do rm "$HOME/brain/tasks/bulk-task-$i.md"; done
 grep -v 'bulk-task-1' "$HOME/brain/followups.md" > "$WORK/f" && cp "$WORK/f" "$HOME/brain/followups.md"
 printf '# Inbox\n\n' > "$HOME/brain/inbox.md"
 
-echo "== task log keeps the history"
+echo "== work done"
 for i in $(seq 1 20); do "$B" log api-rate-limits "Milestone $i shipped" >/dev/null; done
-"$B" progress api-rate-limits "Old progress command still logs" >/dev/null
+"$B" progress api-rate-limits "Old progress command still adds work" >/dev/null
+"$B" log api-rate-limits "Milestone 3 shipped" >/dev/null
+"$B" log api-rate-limits "Older prompts pass --at" --at "2026-01-01 10:00" >/dev/null
 "$B" set api-rate-limits direction "$(printf 'l1\nl2\nl3\nl4\nl5\nl6')" >/dev/null
 "$B" set api-rate-limits next "Ship the middleware" >/dev/null
 "$B" set api-rate-limits status blocked >/dev/null
@@ -130,33 +135,20 @@ for i in $(seq 1 20); do "$B" log api-rate-limits "Milestone $i shipped" >/dev/n
 "$B" link api-rate-limits "$SID" >/dev/null; "$B" link api-rate-limits "$SID" >/dev/null
 CLAUDE_CODE_SESSION_ID="$SID" "$B" log api-rate-limits "Found the gateway already buffers bursts" >/dev/null
 f="$HOME/brain/tasks/api-rate-limits.md"
-check "all 20 log lines kept, oldest first" "[ \$(grep -c '^- [0-9:]* Milestone' $f) -eq 20 ] && grep 'Milestone' $f | head -1 | grep -q 'Milestone 1 shipped'"
-check "progress is an alias for log" "grep -q 'Old progress command still logs' $f"
-check "no Progress section in new tasks" "! grep -q '^## Progress' $f"
+work() { sed -n '/^## Work done/,/^## /p' "$f" | grep '^- '; }
+check "all 20 lines kept, oldest first, as plain lines" "[ \$(work | grep -c '^- Milestone') -eq 20 ] && work | grep Milestone | head -1 | grep -qx -- '- Milestone 1 shipped'"
+check "progress is an alias" "work | grep -q 'Old progress command still adds work'"
+check "the same line is not added twice" "[ \$(work | grep -c 'Milestone 3 shipped') -eq 1 ]"
+check "--at from older prompts is accepted and ignored" "work | grep -qx -- '- Older prompts pass --at'"
+check "Work done sits between Direction and Next" "[ \"\$(grep '^## ' $f | tr '\n' '/')\" = '## Goal/## Direction/## Work done/## Next/' ]"
+check "no timestamps or session headings" "! grep -q '^### ' $f && ! work | grep -q '^- [0-9][0-9]:[0-9][0-9] '"
+check "status, next, direction, ticket and link changes add nothing" "! grep -q 'Status:\|Next: Ship\|Direction changed\|Ticket added\|Session linked\|Task created' $f"
 check "direction capped at 4 lines" "! sed -n '/^## Direction/,/^## /p' $f | grep -q '^l5'"
-check "direction change logged with the old value" "grep -q 'Direction changed to: .*l1.*(was: Token bucket in the gateway)' $f"
-check "next change logged with the old value" "grep -q 'Next: Ship the middleware (was: Write the middleware)' $f"
-check "status changes logged" "grep -q 'Status: active -> blocked' $f && grep -q 'Status: blocked -> active' $f"
-check "ticket addition logged" "grep -q 'Ticket added: https://github.com/o/r/pull/7' $f"
 check "two tickets kept, URL with # intact" "grep -q '^ticket: \[ENG-12, https://github.com/o/r/pull/7#issuecomment-1\]' $f"
 check "session linked once" "[ \$(grep '^sessions:' $f | grep -o $SID | wc -l) -eq 1 ]"
-check "link logged once under that session's heading" "[ \$(grep -c 'Session linked' $f) -eq 1 ] && grep -q '^### .* | session 11111111 (w)' $f"
-check "entry from a session is filed under its heading" "awk '/^### /{h=\$0} /buffers bursts/{print h}' $f | grep -q 'session 11111111'"
-check "entries without a session are filed as background" "grep -q '^### .* | background' $f"
+check "work from a session marks that session as recorded" "python3 -c \"import json;d=json.load(open('$HOME/brain/.state/covered.json'));assert '$SID' in d, d\""
 check "lint passes" "$B lint >/dev/null"
-# a summary written later goes where the work happened, not at the bottom
-"$B" new backdate-test "Backdate test" >/dev/null
-"$B" log backdate-test "written now" >/dev/null
-TODAY="$(date '+%Y-%m-%d')"
-"$B" log backdate-test "early work" --session early-sess --at "$TODAY 00:02" >/dev/null
-"$B" log backdate-test "earlier work" --session early-sess --at "$TODAY 00:01" >/dev/null
-bf="$HOME/brain/tasks/backdate-test.md"
-check "--at entry filed under its session, in time order, before later blocks" "[ \"\$(grep -E '^(### |- )' $bf | sed 's/ (.*)//' | tr '\n' '/' | cut -d/ -f1-3)\" = \"### $TODAY | session early-se/- 00:01 earlier work/- 00:02 early work\" ]"
-check "--at does not backdate the task's updated time" "! grep -q '^updated: $TODAY 00:0' $bf"
-check "--at rejects a bad time" "! $B log backdate-test x --at 'yesterday-ish' 2>/dev/null"
-check "--at rejects a future time" "! $B log backdate-test x --at '2099-01-01 10:00' 2>/dev/null"
-rm -f "$bf"
-# an old-format task with a Progress section is migrated into the log, nothing lost
+# older formats are folded into Work done: no timestamps, no bookkeeping, nothing lost
 cat > "$HOME/brain/tasks/old-format-task.md" <<'EOF'
 ---
 title: Old format
@@ -178,12 +170,24 @@ Old direction
 
 ## Next
 Old next
+
+## Log
+### 2026-01-03 | session abcd1234 (w)
+- 09:00 Task created
+- 09:01 Session linked
+- 09:02 third thing
+- 09:03 Status: active -> blocked
+- 09:04 Next: x (was: y)
+
+### 2026-01-03 | background
+- 09:05 second thing
+- 09:06 Checked deploy: green
 EOF
 of="$HOME/brain/tasks/old-format-task.md"
-check "lint flags an unmigrated Progress section" "! $B lint >/dev/null"
+check "lint flags old Progress/Log sections" "! $B lint >/dev/null"
 "$B" tick --no-agent >/dev/null
-check "tick migrates Progress into the log" "! grep -q '^## Progress' $of && grep -q '^## Log' $of"
-check "migrated lines kept, oldest first, by date" "[ \"\$(grep -E '^(### |- )' $of | tr '\n' '/')\" = '### 2026-01-01 | earlier/- 09:00 first thing/### 2026-01-02 | earlier/- 10:00 second thing/' ]"
+check "tick folds Progress and Log into Work done" "! grep -q '^## Progress\|^## Log' $of && grep -q '^## Work done' $of"
+check "migrated work kept in order, bookkeeping and repeats dropped" "[ \"\$(sed -n '/^## Work done/,/^## /p' $of | grep '^- ' | tr '\n' '/')\" = '- first thing/- second thing/- third thing/- Checked deploy: green/' ]"
 check "migration keeps Goal, Direction and Next" "grep -q 'Old goal' $of && grep -q 'Old direction' $of && grep -q 'Old next' $of"
 rm -f "$of"
 check "bad slug rejected" "! $B new Bad_Slug x 2>/dev/null && ! $B new one x 2>/dev/null && ! $B new a-b-c-d-e x 2>/dev/null"
@@ -232,6 +236,13 @@ check "outside hours: follow-up not sent to agent" "$B tick --dry-run --at '2026
 "$B" tick --at "$NOW" >/dev/null   # third time: give up and tell the owner
 check "agent tried twice then gave up" "[ \$(grep -c '^ARGS:' $WORK/claude-calls.log) -eq 1 ]"
 check "give-up ticked the follow-up and told the owner" "grep -q '\[x\] 2020-01-01 10:00' $HOME/brain/followups.md && grep -q 'Could not check follow-up' $HOME/brain/inbox.md"
+printf '#!/bin/bash\necho "Failed to authenticate: OAuth session expired and could not be refreshed" >&2\nexit 1\n' > "$WORK/bin/claude-fail"; chmod +x "$WORK/bin/claude-fail"
+"$B" config CLAUDE_BIN "$WORK/bin/claude-fail" >/dev/null
+"$B" followup "$(date '+%Y-%m-%d') 00:00" api-rate-limits "Check the failing agent case" >/dev/null
+"$B" tick --at "$NOW" >/dev/null
+check "a failed agent run tells the owner why, with the fix for logins" "grep -q \"Rami's agent failed: Failed to authenticate.*/login\" $HOME/brain/inbox.md"
+"$B" config CLAUDE_BIN "$WORK/bin/claude" >/dev/null
+"$B" fdone "$("$B" board | sed -n 's/^- DUE \([0-9a-f]*\) .*Check the failing agent case.*/\1/p' | head -1)" "test" >/dev/null 2>&1
 
 echo "== reminders fire at any hour without a model"
 : > "$WORK/claude-calls.log"
@@ -272,7 +283,11 @@ p6=$(mk_transcript noend-6 3 4 90); printf '%s | start | noend-6 | /w | %s\n' "$
 "$B" new stall-target-task "Stall target" >/dev/null; "$B" link stall-target-task stall-4 >/dev/null
 p7=$(mk_transcript cov-7 4 6 5);   printf '%s | start | cov-7 | /w | %s\n%s | end | cov-7 | /w | %s\n' "$TS" "$p7" "$T" "$p7" >> "$HOME/brain/sessions.log"
 "$B" new covered-task "Covered" >/dev/null; "$B" link covered-task cov-7 >/dev/null
-printf '\n### %s | session cov-7 (w)\n- %s Deployed and verified\n' "$(at_minus 3 %Y-%m-%d)" "$(at_minus 3 %H:%M)" >> "$HOME/brain/tasks/covered-task.md"
+python3 - "$HOME/brain/.state/covered.json" "$(at_minus 3)" <<'EOF2'
+import json,os,sys
+p,at=sys.argv[1:3]; d=json.load(open(p)) if os.path.exists(p) else {}
+d["cov-7"]=at; json.dump(d,open(p,"w"))
+EOF2
 python3 - "$HOME/brain/tasks/upd-target-task.md" "$(at_minus 180)" <<'EOF'
 import sys,re
 p=sys.argv[1]; s=open(p).read()
@@ -287,7 +302,7 @@ if [ "$(date +%u)" -le 5 ]; then
   check "real unlinked session found" "echo \"\$dry\" | grep -q '\"session\": \"real-2\"' && echo \"\$dry\" | grep -q unlinked_session"
   check "ended session with stale task found" "echo \"\$dry\" | grep -q session_update && echo \"\$dry\" | grep -q upd-target-task"
   check "linked session with nothing in the log gets a summary pass" "echo \"\$dry\" | grep -q '\"key\": \"update:upd-3'"
-  check "linked session already covered by the log is skipped" "! echo \"\$dry\" | grep -q '\"session\": \"cov-7\"'"
+  check "linked session whose work is already recorded is skipped" "! echo \"\$dry\" | grep -q '\"session\": \"cov-7\"'"
   check "stalled linked session found" "echo \"\$dry\" | grep -q stalled_session && echo \"\$dry\" | grep -q stall-4"
 else
   echo "  skip session-finding checks (weekend: outside working hours)"
@@ -319,7 +334,7 @@ done
 for i in $(seq 1 10); do "$B" log api-rate-limits "parallel $i" >/dev/null & done
 wait; sleep 4
 check "all 20 end lines present" "[ \$(grep -c '| end | conc-' $HOME/brain/sessions.log) -eq 20 ]"
-check "all 10 parallel log writes applied" "[ \$(grep -c 'parallel' $HOME/brain/tasks/api-rate-limits.md) -eq 10 ]"
+check "all 10 parallel writes applied" "[ \$(grep -c 'parallel' $HOME/brain/tasks/api-rate-limits.md) -eq 10 ]"
 check "working tree committed, no index.lock" "[ -z \"\$(git -C $HOME/brain status --porcelain)\" ] && [ ! -e $HOME/brain/.git/index.lock ]"
 check "end lines are in git" "git -C $HOME/brain show HEAD:sessions.log | grep -c 'conc-' | grep -q 20"
 
@@ -368,10 +383,10 @@ bo="$("$B" board)"
 check "board lists unsorted captures" "echo \"\$bo\" | grep -q '## Captures' && echo \"\$bo\" | grep -q 'buy batteries'"
 id_log="$(cj 'gateway rate' id)"; id_rem="$(cj 'call the bank' id)"; id_task="$(cj 'buy batteries' id)"; id_pipe="$(cj 'pipes' id)"
 "$B" capture-accept "$id_log" >/dev/null
-check "accepting a log suggestion logs it on the task as you" "awk '/^### /{h=\$0} /bursts look fine on staging/{print h}' $HOME/brain/tasks/api-rate-limits.md | grep -q '| you\$'"
+check "accepting a log suggestion adds it to the task's work done" "sed -n '/^## Work done/,/^## /p' $HOME/brain/tasks/api-rate-limits.md | grep -q 'bursts look fine on staging'"
 check "accepted capture is closed with where it went" "grep -q '^- \[x\] .*gateway rate limits.* -> log api-rate-limits' $HOME/brain/captures.md"
 "$B" capture-accept "$id_task" >/dev/null
-check "accepting a task suggestion creates the task" "grep -q '^title: buy batteries and gaffer tape' $HOME/brain/tasks/buy-batteries-gaffer.md && grep -q 'Task created from capture' $HOME/brain/tasks/buy-batteries-gaffer.md"
+check "accepting a task suggestion creates the task" "grep -q '^title: buy batteries and gaffer tape' $HOME/brain/tasks/buy-batteries-gaffer.md"
 "$B" capture-accept "$id_rem" >/dev/null
 check "accepting a reminder adds an owner reminder" "grep -q '^- \[ \] .* | [Rr]emind.*call the bank tomorrow' $HOME/brain/followups.md"
 "$B" capture "second batteries note" >/dev/null
@@ -420,11 +435,11 @@ rm -f "$HOME/brain/tasks/buy-batteries-gaffer.md"
 echo "== search"
 sj() { "$B" search "$1" --json | python3 -c "import json,sys;r=json.load(sys.stdin);print(' '.join('%s:%s' % (x['type'], x['slug']) for x in r))"; }
 check "finds a task by its title" "sj 'rate limits' | grep -q 'task:api-rate-limits'"
-check "finds a log entry by its text" "sj 'gateway already buffers' | grep -q 'log:api-rate-limits'"
+check "finds a work done line by its text" "sj 'gateway already buffers' | grep -q 'work:api-rate-limits'"
 check "finds a decision" "sj 'token bucket' | grep -q 'decision:api-rate-limits'"
-check "all words must match, in any order" "sj 'bursts gateway' | grep -q 'log:api-rate-limits' && [ -z \"\$(sj 'gateway zebra')\" ]"
+check "all words must match, in any order" "sj 'bursts gateway' | grep -q 'work:api-rate-limits' && [ -z \"\$(sj 'gateway zebra')\" ]"
 check "case-insensitive" "sj 'RATE LIMITS' | grep -q 'task:api-rate-limits'"
-check "title match ranks above log matches" "sj 'rate limits' | awk '{print \$1}' | grep -q '^task:api-rate-limits'"
+check "title match ranks above work done matches" "sj 'rate limits' | awk '{print \$1}' | grep -q '^task:api-rate-limits'"
 check "finds archived tasks" "sj 'stall target' | grep -q 'archived:stall-target-task'"
 check "empty query returns nothing" "[ -z \"\$(sj '  ')\" ]"
 check "results are capped" "[ \$(\"$B\" search a --json | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))') -le 30 ]"
@@ -457,7 +472,7 @@ check "status counts agent runs and failures from the tick log" "sx \"assert d['
 check "status lists health checks with ok/warn/bad" "sx \"c={x['id']:x for x in d['checks']}; assert {'hooks','tick','claude','git'} <= set(c), c; assert all(x['level'] in ('ok','warn','bad') for x in c.values())\""
 check "hooks check sees the installed hooks" "sx \"c={x['id']:x for x in d['checks']}; assert c['hooks']['level']=='ok', c['hooks']\""
 check "status counts the store" "sx \"s=d['store']; assert s['tasks'] >= 1 and s['decisions'] >= 1 and 'captures' in s and s['archived'] >= 1, s\""
-check "status shows hourly activity for the last 24h" "sx \"a=d['activity']; assert len(a['sessions'])==24 and len(a['log'])==24, a\""
+check "status shows hourly activity for the last 24h" "sx \"a=d['activity']; assert len(a['sessions'])==24 and len(a['captures'])==24, a\""
 check "status shows config values" "sx \"assert d['config']['AGENT_MODEL']=='haiku'\""
 check "plain status for people" "$B status | grep -qi 'tick'"
 "$B" config NOTIFY off >/dev/null
@@ -518,11 +533,11 @@ check "page assets served" "(for f in app.js app.css core.js today.js inbox.js p
 check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
 api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"
-check "state lists the task with goal, next, log and follow-ups" "[ \"\$(api ${URL}api/state)\" = 200 ] && python3 -c \"
+check "state lists the task with goal, next, work done and follow-ups" "[ \"\$(api ${URL}api/state)\" = 200 ] && python3 -c \"
 import json;d=json.load(open('$WORK/api.out'))
 t=[x for x in d['tasks'] if x['slug']=='web-task-one'][0]
 assert t['goal']=='Show it on the page' and t['next']=='Check the page', t
-assert any(e['text']=='Task created' for e in t['log']), t['log']
+assert t['work_done']==[], t['work_done']
 assert t['followups'][0]['what']=='Check the web page' and not t['followups'][0]['done']
 assert 'now' in d
 \""
@@ -531,10 +546,10 @@ check "a cross-site Origin is refused" "[ \"\$(api -X POST -H 'Origin: https://e
 check "POST without the token is refused" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 403 ]"
 check "POST needs a JSON body" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H \"X-Brain-Token: $TOKEN\" -H 'Content-Type: text/plain' -d 'x' ${URL}api/tasks/web-task-one/status)\" = 415 ]"
 wf="$HOME/brain/tasks/web-task-one.md"
-check "status change from the page is saved and logged as you" "[ \"\$(api -X POST -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 200 ] && grep -q '^status: blocked' $wf && awk '/^### /{h=\$0} /Status: active -> blocked/{print h}' $wf | grep -q '| you\$'"
+check "status change from the page is saved, adding nothing to work done" "[ \"\$(api -X POST -d '{\"status\":\"blocked\"}' ${URL}api/tasks/web-task-one/status)\" = 200 ] && grep -q '^status: blocked' $wf && ! grep -q 'Status:' $wf"
 check "bad status rejected" "[ \"\$(api -X POST -d '{\"status\":\"nope\"}' ${URL}api/tasks/web-task-one/status)\" = 400 ]"
 check "unknown task is 404" "[ \"\$(api -X POST -d '{\"status\":\"done\"}' ${URL}api/tasks/no-such-task/status)\" = 404 ]"
-check "update posted from the page lands in the log" "[ \"\$(api -X POST -d '{\"text\":\"Checked from the page\"}' ${URL}api/tasks/web-task-one/log)\" = 200 ] && grep -q 'Checked from the page' $wf"
+check "update posted from the page lands in work done" "[ \"\$(api -X POST -d '{\"text\":\"Checked from the page\"}' ${URL}api/tasks/web-task-one/log)\" = 200 ] && grep -q 'Checked from the page' $wf"
 check "empty update rejected" "[ \"\$(api -X POST -d '{\"text\":\"  \"}' ${URL}api/tasks/web-task-one/log)\" = 400 ]"
 fid="$(api ${URL}api/state >/dev/null; python3 -c "import json;print([x for x in json.load(open('$WORK/api.out'))['tasks'] if x['slug']=='web-task-one'][0]['followups'][0]['id'])")"
 check "follow-up ticked from the page" "[ \"\$(api -X POST -d '{\"result\":\"looked fine\"}' ${URL}api/followups/$fid/done)\" = 200 ] && grep -q '\[x\] .*Check the web page' $HOME/brain/followups.md && grep -q 'looked fine' $wf"

@@ -92,7 +92,7 @@ function render() {
         el('span', { class: 'big-n' }, String(s.tick.today).padStart(2, '0')),
         el('span', { class: 'big-sub' }, 'every ' + s.tick.every_minutes + ' min · agent ' + s.agent.today + ' runs today · ' + s.agent.model)),
       meter('sessions started', s.activity.sessions),
-      meter('log lines written', s.activity.log),
+      meter('notes captured', s.activity.captures),
       el('section', { class: 'block' },
         el('h2', { class: 'label rule' }, 'recent ticks'),
         el('ol', { class: 'ticks' }, s.tick.recent.map((r) => el('li', {},

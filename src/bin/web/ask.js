@@ -24,8 +24,8 @@ export async function mount(panel) {
       el('form', { class: 'capture', onsubmit: (e) => { e.preventDefault(); send($('ask-q').value); } },
         el('div', { class: 'capture-field ask-field' },
           el('span', { class: 'capture-mark', 'aria-hidden': 'true' }, '?'),
-          el('label', { class: 'sr-only', for: 'ask-q' }, 'Ask your brain'),
-          el('input', { id: 'ask-q', autocomplete: 'off', maxlength: '500', placeholder: 'ask your brain…' })),
+          el('label', { class: 'sr-only', for: 'ask-q' }, 'Ask Rami'),
+          el('input', { id: 'ask-q', autocomplete: 'off', maxlength: '500', placeholder: 'ask rami…' })),
         el('button', { type: 'submit', class: 'capture-add send', id: 'ask-send', disabled: !!pending }, 'SEND'))));
   $('ask-sub').textContent = 'claude ' + (model || 'haiku') + ' · reads ~/brain, read-only · answers take ~15s';
   renderMsgs();
@@ -125,12 +125,12 @@ function renderMsgs() {
       out.push(el('div', { class: 'day' }, dayLabel(lastDay)));
     }
     out.push(msg('you', 'you', h.question, null, h.at ? hm(h.at) : ''));
-    out.push(msg('brain', h.error ? 'err' : 'brain', h.answer, h.refs, ''));
+    out.push(msg('rami', h.error ? 'err' : 'brain', h.answer, h.refs, ''));
   }
   if (pending) {
     out.push(msg('you', 'you', pending, null, ''));
-    out.push(el('div', { class: 'msg' }, el('span', { class: 'msg-who brain' }, 'brain'),
-      el('p', { class: 'msg-text thinking' }, 'reading your brain', el('span', { class: 'cursor', 'aria-hidden': 'true' }, '▍'))));
+    out.push(el('div', { class: 'msg' }, el('span', { class: 'msg-who brain' }, 'rami'),
+      el('p', { class: 'msg-text thinking' }, 'rami is reading your notes', el('span', { class: 'cursor', 'aria-hidden': 'true' }, '▍'))));
   }
   box.replaceChildren(...out);
   box.scrollTo({ top: box.scrollHeight, behavior: reducedMotion() ? 'auto' : 'smooth' });

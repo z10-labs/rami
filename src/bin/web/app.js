@@ -69,7 +69,30 @@ function renderStatus() {
   $('counts').textContent = open + ' open · ' + today.dueCount(d) + ' due · ' + inbox.inboxCount(d) + ' in';
 }
 
+// A note from Rami that arrives while the page is open pops up in the corner,
+// like the macOS banner. Notes already there when the page loaded do not.
+const TOAST_MS = 10000;
+let knownNotes = null;
+
+function toastNewNotes() {
+  const ids = store.data.notes.map((n) => n.id);
+  if (knownNotes === null) { knownNotes = new Set(ids); return; }
+  for (const n of store.data.notes) {
+    if (knownNotes.has(n.id)) continue;
+    knownNotes.add(n.id);
+    const item = el('div', { class: 'toast', role: 'status' },
+      el('span', { class: 'toast-who' }, 'rami'),
+      el('span', { class: 'toast-text' }, n.text),
+      el('span', { class: 'toast-actions' },
+        el('a', { href: '#inbox', class: 'toast-link', onclick: () => item.remove() }, 'open inbox'),
+        el('button', { type: 'button', class: 'toast-x', 'aria-label': 'Close', onclick: () => item.remove() }, '×')));
+    $('toasts').append(item);
+    setTimeout(() => item.remove(), TOAST_MS);
+  }
+}
+
 function render() {
+  toastNewNotes();
   renderStatus();
   renderRail();
   current.mod.update();

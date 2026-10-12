@@ -1,13 +1,13 @@
-"""Search across the brain: tasks, their logs, decisions and archived tasks.
+"""Search across the brain: tasks, their work done, decisions and archived tasks.
 
 Every word of the query must appear (case-insensitive, any order) in one
 field. Results are ranked by where they matched (title, then goal/next/
-direction, then decisions, then log lines) and then by recency.
+direction, then decisions, then work done lines) and then by recency.
 """
 import re
 
 LIMIT = 30
-RANK = {"task": 0, "archived": 1, "decision": 2, "log": 3}
+RANK = {"task": 0, "archived": 1, "decision": 2, "work": 3}
 
 
 def words(q):
@@ -29,10 +29,10 @@ def task_hits(core, x, ws, archived=False):
                     "hint": x.get("status") or "", "at": upd, "score": 0 if title_hit else 1})
     if archived:
         return out
-    for w, src, txt in x.log_entries():
+    for txt in x.work_done():
         if matches(ws, txt):
-            out.append({"type": "log", "slug": x.slug, "label": txt,
-                        "hint": x.get("title") or x.slug, "at": core.fmt(w) if w else "", "score": 3})
+            out.append({"type": "work", "slug": x.slug, "label": txt,
+                        "hint": x.get("title") or x.slug, "at": upd, "score": 3})
     return out
 
 

@@ -5,7 +5,7 @@ captures.md holds one line per capture:
     - [x] 2026-10-08 21:41 | VOICE | buy batteries -> task buy-batteries
 A suggestion (log on a task / new task / reminder) is computed when listed,
 from the text alone, without a model. Accepting applies it (or an override)
-through the same functions as the CLI; entries are logged as "you".
+through the same functions as the CLI.
 """
 import datetime as dt
 import os
@@ -15,7 +15,6 @@ CAP_RE = re.compile(r"^\s*-\s*\[( |x|X)\]\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*
 KINDS = ("log", "task", "remind")
 SOURCES = ("TEXT", "VOICE", "CLIP", "WEB")
 TEXT_MAX = 300
-SOURCE = "you"
 REMIND_RE = re.compile(r"^\s*(remind|reminder|don'?t forget|follow ?up)\b", re.I)
 STOP = set("""a an and are as at be but by can do for from get got had has have how i if in into is it
 its just me my need needs not of on or our so some that the their then there this to too up us was we
@@ -196,7 +195,7 @@ def accept(core, cid, kind=None, dest=None):
     if kind == "log":
         if not dest or not os.path.isfile(core.task_path(dest)):
             raise core.BrainError("no task %r to log to" % dest)
-        core.log_entry(dest, c.text, source=SOURCE)
+        core.log_entry(dest, c.text)
     elif kind == "task":
         dest = dest or slug_from(core, c.text)
         if not core.slug_ok(dest):
@@ -218,7 +217,7 @@ def new_task(core, slug, text):
     a = A()
     a.slug, a.title, a.goal, a.direction, a.next = slug, text, None, None, text
     a.ticket, a.session = None, None
-    core.cmd_new(a, quiet=True, note="Task created from capture", source=SOURCE)
+    core.cmd_new(a, quiet=True)
 
 
 def dismiss(core, cid):

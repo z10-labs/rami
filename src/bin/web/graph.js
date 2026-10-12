@@ -95,7 +95,7 @@ const byId = (id) => data.nodes.find((n) => n.id === id);
 
 function size(n) {
   if (n.kind === 'project') return 16 + 4 * Math.min(6, neighbours(n.id).length);
-  if (n.kind === 'task') return 12 + Math.min(10, Math.round((n.log || 0) / 3));
+  if (n.kind === 'task') return 12 + Math.min(10, Math.round((n.work || 0) / 3));
   return 10;
 }
 

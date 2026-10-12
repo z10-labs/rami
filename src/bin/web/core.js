@@ -74,7 +74,7 @@ export async function load(force) {
     setStatusLine(true, '');
     accept(next);
   } catch (e) {
-    setStatusLine(false, 'brain serve not reachable: ' + e.message);
+    setStatusLine(false, 'rami is not reachable (is brain serve running?): ' + e.message);
   }
 }
 

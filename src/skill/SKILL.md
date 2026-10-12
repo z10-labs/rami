@@ -1,6 +1,6 @@
 ---
 name: brain
-description: Owner's second brain at ~/brain. Use in EVERY work session, without being asked, as soon as real work starts (first file edit, a deploy/migration/release, a ticket named) - match the session to a task, then log what happens, big decisions and follow-ups. Also use when the owner asks "what's on my board", "where was I on X", "what did we decide about Y", "remind me", or says a task is done.
+description: Owner's second brain at ~/brain. Use in EVERY work session, without being asked, as soon as real work starts (first file edit, a deploy/migration/release, a ticket named) - match the session to a task, then record the work done, big decisions and follow-ups. Also use when the owner asks "what's on my board", "where was I on X", "what did we decide about Y", "remind me", or says a task is done.
 ---
 
 # Brain: background task bookkeeping
@@ -23,13 +23,13 @@ variables, `cd` or `&&` chains (the pre-approved permission only matches that fo
 ~/brain/bin/brain new SLUG "Title" --goal "..." --direction "..." --next "..." [--ticket ID] --session SESSION_ID
 ~/brain/bin/brain link SLUG SESSION_ID
 ~/brain/bin/brain set SLUG next|direction|goal|status|title|ticket "VALUE"
-~/brain/bin/brain log SLUG "what happened"
+~/brain/bin/brain log SLUG "what was done"             # one line added to Work done
 ~/brain/bin/brain done SLUG "final line"
 ~/brain/bin/brain decide SLUG "short title" --decision "..." --why "..." --rejected "..."
 ~/brain/bin/brain followup WHEN SLUG "what to check"   # WHEN: +30m +2h +1d next-workday HH:MM tomorrow "YYYY-MM-DD HH:MM"
 ~/brain/bin/brain followup WHEN SLUG "what" --remind   # owner reminders (fire at any hour)
 ~/brain/bin/brain fdone FOLLOWUP_ID "result"
-~/brain/bin/brain search "words"                       # tasks, log lines, decisions, archive
+~/brain/bin/brain search "words"                       # tasks, work done, decisions, archive
 ~/brain/bin/brain capture-accept CAPTURE_ID --kind log --dest SLUG
 ```
 
@@ -56,18 +56,18 @@ sessions often end abruptly, and a deploy is exactly when the end comes late.
 A Jira/Linear id, GitHub issue or PR URL mentioned for the task: `set SLUG ticket ID`
 (adds to the list; a task may have several).
 
-## 3. Log what happens
+## 3. Record the work done
 
-The task's Log is its history: the owner reads it later to learn what
-actually happened. It is never trimmed, and entries are filed under this
-session automatically.
+The task's description includes a Work done list: plain lines, oldest first,
+that tell the owner what has actually been done on the task. It is never
+trimmed.
 
-- `log` as you go, one line per call: what you found, what you changed and
-  where, results (tests, deploys, stacks), problems, what was left open.
-- Not noise: no "read file", "ran ls", or each small edit.
-- Before your final reply, make sure the session's outcome is in the log.
-- Rewrite Direction and Next with `set` when they change. The old value is
-  logged for you, so nothing is lost.
+- Add to it with `log` as you go, one line per call: what you found, what you
+  changed and where, results (tests, deploys, stacks), problems, what was
+  left open.
+- Not noise: no "read file", "ran ls", each small edit, or status changes.
+- Before your final reply, make sure the session's outcome is in Work done.
+- Rewrite Direction and Next with `set` when they change.
 - No code, logs or long explanation. Name the file, PR, ticket or stack.
 
 ## 4. Decisions
@@ -77,7 +77,7 @@ Log with `decide` only if at least one is true:
 - it changes the task's direction or scope
 - someone would later ask "why did we do it this way?"
 
-Never for naming, formatting, small refactors or routine fixes. When unsure, do not log.
+Never for naming, formatting, small refactors or routine fixes. When unsure, do not record one.
 
 ## 5. Follow-ups
 
@@ -110,8 +110,8 @@ briefly from `~/brain` (`board`, `search "words"`, `show SLUG`).
 
 The board's Captures section lists the owner's quick notes (typed on the
 brain page). If one is clearly about this session's work, file it with
-`capture-accept ID --kind log --dest SLUG` (that adds it to the task's log;
-do not log it again). Leave the rest for the owner.
+`capture-accept ID --kind log --dest SLUG` (that adds it to the task's Work
+done; do not add it again). Leave the rest for the owner.
 
 ## Never
 

@@ -1,4 +1,4 @@
-/* Second Brain page. Tokens follow the Claude Design source ("Second
+/* Rami page. Tokens follow the Claude Design source ("Second
    Brain.dc.html"), whose three "directions" are the three looks: A light,
    B dark, C steel. With no choice made (no data-dir), the OS decides A or B. */
 :root {
@@ -193,6 +193,10 @@ span.chip { box-shadow: none; background: transparent; color: var(--ink); }
 .btn-key:active { transform: translateY(2px); box-shadow: none; }
 .btn-key:disabled { opacity: .5; cursor: default; }
 .updates { list-style: none; margin: 0; padding: 0; }
+.work { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.45; }
+.work li { overflow-wrap: anywhere; text-wrap: pretty; }
+.work li.none { list-style: none; margin-left: -18px; }
+#detail-rest { display: flex; flex-direction: column; gap: 20px; }
 .day { font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--mute); padding: 12px 0 2px; border-bottom: 1px solid var(--line); }
 .upd { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 10px; padding: 7px 0; }
 .upd-who { display: flex; flex-direction: column; gap: 2px; font: 500 10px var(--mono); color: var(--mute); }
@@ -235,6 +239,19 @@ span.chip { box-shadow: none; background: transparent; color: var(--ink); }
 .mini:active { transform: translateY(2px); box-shadow: none; }
 .mini.ghost { background: transparent; color: var(--mute); box-shadow: none; }
 .notes { display: flex; flex-direction: column; gap: 4px; }
+
+/* ---------------------------------------------------------------- toasts */
+.toasts { position: fixed; right: 24px; bottom: 24px; z-index: 9; display: flex; flex-direction: column; gap: 10px; width: min(380px, calc(100vw - 32px)); }
+.toast { background: var(--disp); color: var(--disp-ink); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 20px 40px -12px rgba(0,0,0,.5); animation: toast-in .2s var(--ease); }
+.toast-who { font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--acc); }
+.toast-text { font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.toast-actions { display: flex; justify-content: space-between; align-items: center; }
+.toast-link { font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--disp-ink); }
+.toast-link:hover { color: var(--acc); }
+.toast-x { border: 0; background: transparent; color: var(--disp-ink); font: 600 16px var(--mono); padding: 0 4px; opacity: .7; }
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
+@media (max-width: 640px) { .toasts { right: 16px; bottom: 16px; } }
 
 /* ---------------------------------------------------------------- palette */
 .pal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.32); display: flex; justify-content: center; align-items: flex-start; padding: 90px 16px 16px; z-index: 10; }
@@ -426,6 +443,6 @@ button.chip { font: 500 11px var(--mono); }
   .panel-head .btn-acc { padding: 7px 10px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
   .key.is-on, .st[aria-pressed="true"], .key:active, .check:active, .btn-key:active { transform: none; }
 }

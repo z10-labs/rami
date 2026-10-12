@@ -302,13 +302,16 @@ def parse_when(cfg, s, base=None):
 # --------------------------------------------------------------------------
 # task files
 
-SECTION_ORDER = ["Goal", "Direction", "Next", "Log"]
-# Log headings: "### YYYY-MM-DD | session abcd1234 (folder)" or "| background".
-LOG_HEAD_RE = re.compile(r"^###\s+(\d{4}-\d{2}-\d{2})\s*\|\s*(.*?)\s*$")
-LOG_ITEM_RE = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s+(.*?)\s*$")
+WORK = "Work done"
+SECTION_ORDER = ["Goal", "Direction", WORK, "Next"]
+# Older formats, read only to migrate them into Work done:
+# "## Progress" lines "- YYYY-MM-DD HH:MM text" (newest first), and
+# "## Log" with "### YYYY-MM-DD | source" headings and "- HH:MM text" lines.
 OLD_PROGRESS_RE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s+(.*?)\s*$")
-# Lines the brain writes itself; they do not count as a record of the work.
-AUTO_LOG_PREFIXES = ("Session linked", "Task created")
+OLD_LOG_ITEM_RE = re.compile(r"^\s*-\s*(\d{1,2}:\d{2})\s+(.*?)\s*$")
+# Bookkeeping the old Log recorded automatically; not work, so not migrated.
+AUTO_LINE_RE = re.compile(r"^(Task created|Session linked|Status: |Next: |Direction changed to: |"
+                          r"Goal changed to: |Title: |Ticket added: )")
 
 
 class Task(object):
@@ -402,18 +405,10 @@ class Task(object):
     def text_of(self, name):
         return "\n".join(self.section(name) or []).strip()
 
-    def log_entries(self):
-        """[(datetime, source, text)] in file order (oldest first)."""
-        out, day, src = [], None, ""
-        for ln in self.section("Log") or []:
-            m = LOG_HEAD_RE.match(ln)
-            if m:
-                day, src = m.group(1), m.group(2)
-                continue
-            m = LOG_ITEM_RE.match(ln)
-            if m and day:
-                out.append((parse_ts("%s %s" % (day, m.group(1))), src, m.group(2)))
-        return out
+    def work_done(self):
+        """The Work done lines, oldest first, without their "- "."""
+        return [re.sub(r"^\s*-\s*", "", l).strip() for l in self.section(WORK) or []
+                if l.strip().startswith("-")]
 
     # rendering -------------------------------------------------------
     def render(self):
@@ -438,25 +433,27 @@ class Task(object):
         write_atomic(self.path, self.render())
 
     def migrate(self):
-        """Move an old-format Progress section (newest first) into the Log."""
-        prog = self.section("Progress")
-        if prog is None:
+        """Fold old Progress and Log sections into Work done: plain lines,
+        oldest first, without timestamps, headings, bookkeeping or repeats."""
+        prog, log = self.section("Progress"), self.section("Log")
+        if prog is None and log is None:
             return False
-        moved, day = [], None
-        for ln in reversed([l for l in prog if l.strip()]):
+        texts = []
+        for ln in reversed([l for l in prog or [] if l.strip()]):
             m = OLD_PROGRESS_RE.match(ln)
-            if m:
-                if m.group(1) != day:
-                    day = m.group(1)
-                    if moved:
-                        moved.append("")
-                    moved.append("### %s | earlier" % day)
-                moved.append("- %s %s" % (m.group(2), m.group(3)))
-            elif ln.strip():
-                moved.append(ln)
-        rest = self.section("Log") or []
+            texts.append(m.group(3) if m else re.sub(r"^\s*-\s*", "", ln).strip())
+        for ln in log or []:
+            if ln.startswith("###") or not ln.strip():
+                continue
+            m = OLD_LOG_ITEM_RE.match(ln)
+            texts.append(m.group(2) if m else re.sub(r"^\s*-\s*", "", ln).strip())
+        lines = self.work_done()
+        for t in texts:
+            if t and not AUTO_LINE_RE.match(t) and t not in lines:
+                lines.append(t)
         self.remove_section("Progress")
-        self.set_section("Log", moved + ([""] if moved and rest else []) + rest)
+        self.remove_section("Log")
+        self.set_section(WORK, ["- " + t for t in lines])
         return True
 
     def as_dict(self, archived=False):
@@ -472,8 +469,7 @@ class Task(object):
             "sessions": self.get_list("sessions"),
             "goal": self.text_of("Goal"),
             "direction": self.text_of("Direction"),
-            "log": [{"at": fmt(w) if w else "", "source": src, "text": txt}
-                    for w, src, txt in self.log_entries()],
+            "work_done": self.work_done(),
             "next": self.text_of("Next"),
             "markdown": read(self.path),
         }
@@ -564,7 +560,7 @@ def find_followup(fid):
     raise BrainError("no follow-up with id %r" % fid)
 
 
-def tick_followup(fid, result=None, source=None):
+def tick_followup(fid, result=None):
     """Tick a follow-up; note the result on the task. Caller holds write lock."""
     lines, f = find_followup(fid)
     if f.done:
@@ -573,96 +569,29 @@ def tick_followup(fid, result=None, source=None):
     write_atomic(FOLLOWUPS, "\n".join(lines) + "\n")
     if result and os.path.isfile(task_path(f.slug)):
         t = load_task(f.slug)
-        add_log(t, "Follow-up checked (%s): %s" % (one_line(f.what, 80), result), source=source)
+        add_work(t, "Checked %s: %s" % (one_line(f.what, 80), result))
         t.save()
     return f
 
 
-def log_source(session=None, source=None):
-    """Heading source for a log entry: the session it came from, else background."""
-    if source:
-        return source
-    sid = session
-    if not sid and not is_agent_run():
-        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+def add_work(t, text):
+    """Append one line to the task's Work done, unless it is already there."""
+    line = one_line(text, LOG_LINE_MAX)
+    lines = t.work_done()
+    if line and line not in lines:
+        t.set_section(WORK, ["- " + l for l in lines + [line]])
+    t.touch()
+
+
+def note_session_work(sid):
+    """Remember when a session last added work (the tick skips summarising it)."""
     if not sid:
-        return "background"
-    cwd = load_sessions().get(sid, {}).get("cwd", "")
-    return "session %s%s" % (sid[:8], " (%s)" % os.path.basename(cwd.rstrip("/")) if cwd else "")
-
-
-def log_blocks(lines):
-    """Split Log lines into [[heading, [item lines]]]; text before any heading is kept."""
-    blocks = [[None, []]]
-    for ln in lines:
-        if ln.startswith("### "):
-            blocks.append([ln.strip(), []])
-        elif ln.strip():
-            blocks[-1][1].append(ln)
-    return blocks if blocks[0][1] else blocks[1:]
-
-
-def block_time(block, last=False):
-    """Time of a block's first item (or last item), from its heading's day."""
-    m = LOG_HEAD_RE.match(block[0] or "")
-    items = [i for i in (LOG_ITEM_RE.match(l) for l in block[1]) if i]
-    if last:
-        items = items[::-1]
-    hm = items[0].group(1) if items else "00:00"
-    return parse_ts("%s %s" % (m.group(1), hm)) if m else None
-
-
-def add_log(t, text, when=None, session=None, source=None):
-    """Add one line to the task's Log under the heading for its day and source.
-
-    A normal entry is appended. A backdated one (when < now) goes into the
-    block for that day and source, or a new block placed in time order, so a
-    summary written later still sits where the work happened."""
-    at = when or now()
-    head = "### %s | %s" % (at.strftime(DAY), log_source(session, source))
-    item = "- %s %s" % (at.strftime("%H:%M"), one_line(text, LOG_LINE_MAX))
-    blocks = log_blocks(t.section("Log") or [])
-    backdated = when is not None and blocks and (block_time(blocks[-1], last=True) or at) > at
-    if not backdated:
-        if blocks and blocks[-1][0] == head:
-            blocks[-1][1].append(item)
-        else:
-            blocks.append([head, [item]])
-    else:
-        same = [b for b in blocks if b[0] == head]
-        if same:
-            b = same[-1]
-            pos = len(b[1])
-            for i, ln in enumerate(b[1]):
-                m = LOG_ITEM_RE.match(ln)
-                if m and m.group(1).zfill(5) > at.strftime("%H:%M"):
-                    pos = i
-                    break
-            b[1].insert(pos, item)
-        else:
-            pos = len(blocks)
-            for i, b in enumerate(blocks):
-                bt = block_time(b)
-                if bt and bt > at:
-                    pos = i
-                    break
-            blocks.insert(pos, [head, [item]])
-    out = []
-    for h, items in blocks:
-        if out:
-            out.append("")
-        if h:
-            out.append(h)
-        out.extend(items)
-    t.set_section("Log", out)
-    t.touch(max(at, now()) if when else at)
-
-
-def session_log_entries(t, sid):
-    """Entries filed under this session's headings, minus the brain's own lines."""
-    tag = "session " + sid[:8]
-    return [(w, txt) for w, src, txt in t.log_entries()
-            if src.startswith(tag) and not txt.startswith(AUTO_LOG_PREFIXES)]
+        return
+    st = load_state("covered.json")
+    st[sid] = fmt(now())
+    if len(st) > 500:
+        st = dict(sorted(st.items(), key=lambda kv: kv[1])[-400:])
+    save_state(st, "covered.json")
 
 
 # --------------------------------------------------------------------------
@@ -892,16 +821,22 @@ def board_text(session_id="", mark_read=False):
             out.append(one_line("- %s %s | %s" % (c.id, c.at, c.text)))
         if len(caps) > BOARD_CAPTURES:
             out.append("- … %d more in ~/brain/captures.md" % (len(caps) - BOARD_CAPTURES))
-    inbox = inbox_items()
+    # Each note is shown to Claude once; it stays in inbox.md (for the page)
+    # until the owner clears it there, or the tick drops it after 14 days.
+    seen = load_state("board_seen.json")
+    inbox = [l for l in inbox_items() if short_id(l) not in seen]
     if inbox:
         out.append("")
         out.append("## Inbox (tell the owner briefly)")
         for l in inbox[-BOARD_INBOX:]:
             out.append(one_line(l))
         if len(inbox) > BOARD_INBOX:
-            out.append("- … %d older notes cleared" % (len(inbox) - BOARD_INBOX))
+            out.append("- … %d older notes in ~/brain/inbox.md" % (len(inbox) - BOARD_INBOX))
         if mark_read:
-            clear_inbox(inbox)
+            present = set(short_id(l) for l in inbox_items())
+            seen = dict((k, v) for k, v in seen.items() if k in present)
+            seen.update((short_id(l), fmt(t)) for l in inbox)
+            save_state(seen, "board_seen.json")
     return "\n".join(out) + "\n"
 
 
@@ -1166,6 +1101,19 @@ def archive_done(cfg, t):
     return moved
 
 
+INBOX_KEEP_DAYS = 14
+
+
+def prune_inbox(t):
+    """Drop owner notes older than INBOX_KEEP_DAYS (git keeps them)."""
+    old = [l for l in inbox_items()
+           if (parse_ts(l.lstrip("- ")[:16]) or t) < t - dt.timedelta(days=INBOX_KEEP_DAYS)]
+    if old:
+        lines = read(INBOX).splitlines()
+        write_atomic(INBOX, "\n".join(l for l in lines if l not in set(old)).rstrip() + "\n")
+    return len(old)
+
+
 def prune_followups(t):
     """Drop ticked follow-ups older than 30 days (git keeps them)."""
     lines, fus = load_followups()
@@ -1179,7 +1127,7 @@ def migrate_tasks():
     """Rewrite old-format tasks (Progress section) into the Log format."""
     fixed = []
     for x in all_tasks():
-        if x.section("Progress") is not None:
+        if x.section("Progress") is not None or x.section("Log") is not None:
             x.save()
             fixed.append(x.slug)
     return fixed
@@ -1209,6 +1157,7 @@ def find_work(cfg, t, st, in_hours):
     sessions = load_sessions()
     open_slugs = set(x.slug for x in tasks if x.get("status") != "done")
     gap = dt.timedelta(minutes=cfg_int(cfg, "SESSION_UPDATE_GAP_MINUTES"))
+    covered = load_state("covered.json")
     stalled_after = dt.timedelta(minutes=cfg_int(cfg, "STALLED_SESSION_MINUTES"))
     recent = t - dt.timedelta(days=7)
 
@@ -1241,15 +1190,14 @@ def find_work(cfg, t, st, in_hours):
                 key = "update:%s:%s" % (sid, fmt(end))
                 if key in handled or not mt:
                     continue
+                last = parse_ts(covered.get(sid, ""))
                 for x in linked:
-                    entries = session_log_entries(x, sid)
-                    last = max([w for w, _ in entries if w] or [None]) if entries else None
                     if last is None or mt - last > gap:
                         if last is None and path and is_trivial(transcript_stats(path)):
                             continue
                         findings.append({"kind": "session_update", "key": key, "session": sid,
                                          "task": x.slug,
-                                         "last_logged": fmt(last) if last else "nothing yet",
+                                         "last_recorded": fmt(last) if last else "nothing yet",
                                          "last_activity": fmt(mt), "ended": fmt(end)})
                         break
         elif not end and s["start"] and s["start"] >= recent - dt.timedelta(days=7):
@@ -1345,12 +1293,12 @@ def cmd_tick(dry_run=False, no_agent=False, at=None):
         if not dry_run:
             with write_lock():
                 moved = archive_done(cfg, t)
-                pruned = prune_followups(t)
+                pruned = prune_followups(t) + prune_inbox(t)
                 migrated = migrate_tasks()
             if moved:
                 changed.append("archived " + ", ".join(moved))
             if pruned:
-                changed.append("pruned %d old follow-ups" % pruned)
+                changed.append("pruned %d old follow-ups and notes" % pruned)
             if migrated:
                 changed.append("migrated " + ", ".join(migrated))
         findings, reminders = find_work(cfg, t, st, in_hours)
@@ -1406,7 +1354,10 @@ def cmd_tick(dry_run=False, no_agent=False, at=None):
                 elif ok:
                     handled[f["key"]] = {"at": fmt(t)}
             if not ok and not no_agent:
-                notify("Brain agent failed; see ~/brain/.state/tick.log", "",
+                reason = next((l.strip() for l in out.splitlines() if l.strip()), "no output")
+                if re.search(r"authenticat|oauth|log ?in", reason, re.I):
+                    reason += " (run `claude` in a terminal and /login)"
+                notify("Rami's agent failed: %s" % one_line(reason, 160), "",
                        key="agentfail:" + t.strftime("%Y%m%d"), cfg=cfg)
             changed.append("agent run (%d findings)" % len(chosen))
         cutoff = t - dt.timedelta(days=30)
@@ -1486,10 +1437,10 @@ sessions: [{sessions}]
 ## Direction
 {direction}
 
+## Work done
+
 ## Next
 {next}
-
-## Log
 """
 
 
@@ -1498,7 +1449,7 @@ def limit_lines(text, n):
     return "\n".join(lines[:n])
 
 
-def cmd_new(a, quiet=False, note="Task created", source=None):
+def cmd_new(a, quiet=False, note=None):
     slug = a.slug
     if not slug_ok(slug):
         raise BrainError("slug must be kebab-case, 2 to 4 words: %r" % slug)
@@ -1514,9 +1465,10 @@ def cmd_new(a, quiet=False, note="Task created", source=None):
         text = text.replace("ticket: " + ", ".join(a.ticket), "ticket: [%s]" % ", ".join(a.ticket))
     with write_lock():
         write_atomic(task_path(slug), text)
-        x = load_task(slug)
-        add_log(x, note, t, session=a.session, source=source)
-        x.save()
+        if note:
+            x = load_task(slug)
+            add_work(x, note)
+            x.save()
     if not quiet:
         print("created task %s" % slug)
 
@@ -1527,59 +1479,34 @@ def cmd_link(slug, sid):
         sids = x.get_list("sessions")
         if sid not in sids:
             x.set_list("sessions", sids + [sid])
-            add_log(x, "Session linked", session=sid)
+            x.touch()
             x.save()
     print("linked %s to %s" % (sid[:8], slug))
 
 
 FIELDS_SECTION = {"goal": ("Goal", 2), "direction": ("Direction", 4), "next": ("Next", 2)}
-FIELD_LOG_LABEL = {"goal": "Goal changed to", "direction": "Direction changed to", "next": "Next"}
-
-
-def change_note(label, new, old):
-    """'Next: new (was: old)', with the old value left out when there was none."""
-    new, old = one_line(new, 140), one_line(old, 140)
-    return "%s: %s" % (label, new) + (" (was: %s)" % old if old and old != "TBD" else "")
-
-
-def set_field(slug, field, value, source=None):
+def set_field(slug, field, value):
     """Change one field of a task and log the change. Raises BrainError."""
     field = field.lower()
     with write_lock():
         x = load_task(slug)
-        note = None
         if field in FIELDS_SECTION:
             name, n = FIELDS_SECTION[field]
-            old, new = x.text_of(name), limit_lines(value, n)
-            x.set_section(name, new.splitlines())
-            if new != old:
-                note = change_note(FIELD_LOG_LABEL[field], new, old)
+            x.set_section(name, limit_lines(value, n).splitlines())
         elif field == "status":
             if value not in STATUSES:
                 raise BrainError("status must be one of %s" % ", ".join(STATUSES))
-            old = x.get("status") or "active"
             x.set("status", value)
-            if value != old:
-                note = "Status: %s -> %s" % (old, value)
         elif field == "title":
-            old, new = x.get("title"), one_line(value, 80)
-            x.set("title", new)
-            if new != old:
-                note = change_note("Title", new, old)
+            x.set("title", one_line(value, 80))
         elif field == "ticket":
             items = x.get_list("ticket")
-            added = []
             for v in re.split(r"[,\s]+", value.strip()):
                 if v and v not in items:
                     items.append(v)
-                    added.append(v)
             x.set("ticket", items[0] if len(items) == 1 else "[" + ", ".join(items) + "]")
-            if added:
-                note = "Ticket added: " + ", ".join(added)
         else:
             raise BrainError("field must be goal, direction, next, status, title or ticket")
-        if note:
-            add_log(x, note, source=source)
         x.touch()
         x.save()
 
@@ -1589,34 +1516,32 @@ def cmd_set(slug, field, value):
     print("%s: %s updated" % (slug, field))
 
 
-def log_entry(slug, text, session=None, at=None, source=None):
-    """Add a line to a task's log. Raises BrainError."""
+def log_entry(slug, text, session=None):
+    """Add a line to a task's Work done. Raises BrainError.
+
+    `session` (or, inside a Claude session, CLAUDE_CODE_SESSION_ID) records
+    that the session's work is written down, so the tick does not summarise it."""
     if not (text or "").strip():
-        raise BrainError("nothing to log")
-    when = None
-    if at:
-        when = parse_ts(at)
-        if when is None:
-            raise BrainError("--at must be 'YYYY-MM-DD HH:MM' (local time): %r" % at)
-        if when > now() + dt.timedelta(minutes=5):
-            raise BrainError("--at is in the future: %s" % at)
+        raise BrainError("nothing to add")
     with write_lock():
         x = load_task(slug)
-        add_log(x, text, when, session=session, source=source)
+        add_work(x, text)
         x.save()
+        if not session and not is_agent_run():
+            session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        note_session_work(session)
 
 
-def cmd_log(slug, text, session=None, at=None):
-    log_entry(slug, text, session, at)
-    print("%s: logged" % slug)
+def cmd_log(slug, text, session=None):
+    log_entry(slug, text, session)
+    print("%s: added to work done" % slug)
 
 
 def cmd_done(slug, text):
     with write_lock():
         x = load_task(slug)
-        add_log(x, text or "Done")
-        if x.get("status") != "done":
-            add_log(x, "Status: %s -> done" % (x.get("status") or "active"))
+        if text:
+            add_work(x, text)
         x.set("status", "done")
         x.set_section("Next", ["None (done)."])
         x.save()
@@ -1648,7 +1573,7 @@ def cmd_decide(a):
         write_atomic(DECISIONS, text.rstrip() + "\n")
         if os.path.isfile(task_path(a.slug)):
             x = load_task(a.slug)
-            add_log(x, "Decision: %s (see decisions.md)" % one_line(a.title, 80))
+            add_work(x, "Decided: %s (see decisions.md)" % one_line(a.title, 80))
             x.save()
     print("decision logged for %s" % a.slug)
 
@@ -1680,8 +1605,8 @@ def cmd_lint():
         probs = []
         if not slug_ok(x.slug):
             probs.append("slug not kebab-case 2-4 words")
-        if x.section("Progress") is not None:
-            probs.append("old Progress section (the next tick moves it into the Log)")
+        if x.section("Progress") is not None or x.section("Log") is not None:
+            probs.append("old Progress/Log section (the next tick moves it into Work done)")
         for name, n in FIELDS_SECTION.values():
             got = len([l for l in (x.section(name) or []) if l.strip()])
             if got > n:
@@ -1816,10 +1741,8 @@ USAGE = """brain: the second brain command
   new SLUG TITLE [--goal G] [--direction D] [--next N] [--ticket T]... [--session ID]
   link SLUG SESSION_ID
   set SLUG goal|direction|next|status|title|ticket VALUE
-  log SLUG TEXT [--session ID] [--at 'YYYY-MM-DD HH:MM']
-                                add a line to the task's log (progress is an alias);
-                                --at files it at the time the work happened
-  done SLUG [TEXT]              mark done, final log line, close follow-ups
+  log SLUG TEXT [--session ID]  add a line to the task's Work done (progress is an alias)
+  done SLUG [TEXT]              mark done (TEXT goes to Work done), close follow-ups
   decide SLUG TITLE --decision D --why W [--rejected R]
   followup WHEN SLUG WHAT [--remind]   WHEN: +30m +2h +1d next-workday HH:MM tomorrow 'YYYY-MM-DD HH:MM'
   fdone ID [RESULT]             tick a follow-up, note RESULT on its task
@@ -1924,9 +1847,9 @@ def main(argv):
         p.add_argument("slug")
         p.add_argument("text")
         p.add_argument("--session")
-        p.add_argument("--at")
+        p.add_argument("--at", help=argparse.SUPPRESS)   # accepted from older prompts; ignored
         a = p.parse_args(rest)
-        cmd_log(a.slug, a.text, a.session, a.at)
+        cmd_log(a.slug, a.text, a.session)
         return 0
     if cmd in ("capture", "captures", "capture-accept", "capture-dismiss"):
         import brain_captures as C
@@ -2042,7 +1965,7 @@ def main(argv):
         return brain_web.serve(a.port, a.open, sys.modules[__name__])
     if cmd == "_migrate":
         for slug in migrate_tasks():
-            print("migrated %s to the log format" % slug)
+            print("migrated %s to the work done format" % slug)
         return 0
     if cmd == "done":
         p.add_argument("slug")

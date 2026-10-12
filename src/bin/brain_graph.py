@@ -21,7 +21,7 @@ def graph(core, all_tasks=False):
     for x in tasks:
         tid = "task:" + x.slug
         node(tid, "task", x.get("title") or x.slug, slug=x.slug, status=x.get("status") or "active",
-             log=len(x.log_entries()))
+             work=len(x.work_done()))
         project = brain_projects.task_project(x, sessions)
         pid = "project:" + project
         node(pid, "project", project)

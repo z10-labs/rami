@@ -1,5 +1,5 @@
 // Today: open tasks (and those finished today) with a detail pane.
-import { $, el, store, act, taskPath, shortWhen, day, hm, dayLabel, panelHead, keepFocus, reducedMotion, POLL_MS } from './core.js';
+import { $, el, store, act, taskPath, shortWhen, day, dayLabel, panelHead, keepFocus, reducedMotion, POLL_MS } from './core.js';
 
 const STATUSES = ['active', 'waiting', 'blocked', 'done'];
 const ORDER = { blocked: 0, active: 1, waiting: 2, done: 3 };
@@ -11,13 +11,6 @@ const openFollowups = (t) => t.followups.filter((f) => !f.done).sort((a, b) => a
 const isDue = (f) => !f.done && f.due <= store.data.now;
 const setStatus = (slug, status) => act(taskPath(slug, 'status'), { status });
 export const dueCount = (data) => data.tasks.reduce((n, t) => n + t.followups.filter((f) => !f.done && f.due <= data.now).length, 0);
-
-function whoOf(source) {
-  if (source === 'you') return { label: 'you', cls: 'you', sub: '' };
-  const m = /^session (\S+)(?: \((.*)\))?$/.exec(source);
-  if (m) return { label: 'session', cls: 'session', sub: m[1] + (m[2] ? ' · ' + m[2] : '') };
-  return { label: source || 'note', cls: 'bg', sub: '' };
-}
 
 export function mount(panel, param) {
   if (param && param.startsWith('@')) project = param.slice(1) || null;
@@ -32,16 +25,19 @@ export function mount(panel, param) {
           el('span', { class: 'empty-sub' }, 'tasks appear here when a claude session starts real work'))),
       el('section', { class: 'detail', id: 'detail', 'aria-label': 'Task detail', hidden: true },
         el('div', { id: 'detail-body' }),
+        // Work done is part of the description; its add box stays mounted so
+        // typing survives the 10-second refresh.
         el('div', { class: 'block' },
-          el('h2', { class: 'label' }, 'updates'),
-          el('form', { class: 'composer', id: 'composer', onsubmit: postUpdate },
-            el('label', { class: 'sr-only', for: 'upd' }, 'Post an update'),
-            el('input', { id: 'upd', name: 'upd', autocomplete: 'off', maxlength: '300', placeholder: 'post an update…' }),
-            el('button', { type: 'submit', class: 'btn-key' }, 'POST')),
-          el('ol', { class: 'updates', id: 'updates' })))));
+          el('h3', { class: 'label', id: 'work-h' }, 'work done'),
+          el('ul', { class: 'work', id: 'work', 'aria-labelledby': 'work-h' }),
+          el('form', { class: 'composer', id: 'composer', onsubmit: addWork },
+            el('label', { class: 'sr-only', for: 'upd' }, 'Add to work done'),
+            el('input', { id: 'upd', name: 'upd', autocomplete: 'off', maxlength: '300', placeholder: 'add to work done…' }),
+            el('button', { type: 'submit', class: 'btn-key' }, 'ADD'))),
+        el('div', { id: 'detail-rest' }))));
 }
 
-async function postUpdate(e) {
+async function addWork(e) {
   e.preventDefault();
   const input = $('upd');
   const text = input.value.trim();
@@ -123,7 +119,7 @@ function row(t) {
         t.project && el('span', { class: 'proj' }, t.project),
         next && el('span', { class: isDue(next) ? 'due' : '' }, (isDue(next) ? 'due ' : 'next ') + shortWhen(next.due)),
         el('span', { title: 'tickets and sessions' }, '↳ ' + (t.tickets.length + t.sessions.length)),
-        el('span', { title: 'log entries' }, '✎ ' + t.log.length))));
+        el('span', { title: 'work done lines' }, '✎ ' + t.work_done.length))));
 }
 
 function renderDetail(t) {
@@ -146,7 +142,10 @@ function renderDetail(t) {
       el('div', {}, el('dt', {}, 'updated'), el('dd', {}, shortWhen(t.updated))),
       el('div', {}, el('dt', {}, 'created'), el('dd', {}, t.created || '—'))),
     t.goal && el('p', { class: 'goal' }, t.goal),
-    t.direction && el('div', { class: 'block' }, el('h3', { class: 'label' }, 'direction'), el('p', { class: 'prose' }, t.direction)),
+    t.direction && el('div', { class: 'block' }, el('h3', { class: 'label' }, 'direction'), el('p', { class: 'prose' }, t.direction)));
+  $('work').replaceChildren(...(t.work_done.length ? t.work_done.map((w) => el('li', {}, w))
+    : [el('li', { class: 'none' }, 'nothing recorded yet')]));
+  $('detail-rest').replaceChildren(
     t.next && el('div', { class: 'next' }, el('span', { class: 'label' }, 'next'), el('p', {}, t.next)),
     el('div', { class: 'block' },
       el('h3', { class: 'label' }, 'follow-ups · ' + openFollowups(t).length + ' open'),
@@ -157,7 +156,6 @@ function renderDetail(t) {
         t.tickets.map(ticketChip),
         t.sessions.map((s) => el('span', { class: 'chip', title: s.id + (s.end ? ' · ended ' + s.end : '') },
           (s.folder || 'session') + ' · ' + s.short))) : el('span', { class: 'none' }, 'none linked')));
-  renderUpdates(t);
 }
 
 function followup(f) {
@@ -180,20 +178,4 @@ function ticketChip(t) {
     return el('a', { class: 'chip', href: t, target: '_blank', rel: 'noopener noreferrer', title: t }, label);
   }
   return el('span', { class: 'chip' }, t);
-}
-
-function renderUpdates(t) {
-  const items = [];
-  let lastDay = '';
-  for (const e of [...t.log].reverse()) {
-    if (day(e.at) !== lastDay) {
-      lastDay = day(e.at);
-      items.push(el('li', { class: 'day' }, dayLabel(lastDay)));
-    }
-    const who = whoOf(e.source);
-    items.push(el('li', { class: 'upd' },
-      el('span', { class: 'upd-who' }, el('b', { class: who.cls }, who.label), who.sub && el('span', {}, who.sub), el('span', {}, hm(e.at))),
-      el('span', { class: 'upd-text' }, e.text)));
-  }
-  $('updates').replaceChildren(...items);
 }

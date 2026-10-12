@@ -94,10 +94,10 @@ def git_check(core):
 
 
 def activity(core, t):
-    """Sessions started and log lines written per hour, oldest hour first (24 buckets)."""
+    """Sessions started and notes captured per hour, oldest hour first (24 buckets)."""
     start = (t - dt.timedelta(hours=23)).replace(minute=0)
     buckets = lambda: [0] * 24
-    sess, logs = buckets(), buckets()
+    sess, caps = buckets(), buckets()
 
     def put(arr, w):
         if w and w >= start:
@@ -106,10 +106,10 @@ def activity(core, t):
                 arr[i] += 1
     for s in core.load_sessions().values():
         put(sess, s.get("start"))
-    for x in core.all_tasks():
-        for w, _, _ in x.log_entries():
-            put(logs, w)
-    return {"from": core.fmt(start), "sessions": sess, "log": logs}
+    import brain_captures
+    for c in brain_captures.load(core)[1]:
+        put(caps, core.parse_ts(c.at))
+    return {"from": core.fmt(start), "sessions": sess, "captures": caps}
 
 
 def status(core):
@@ -121,7 +121,7 @@ def status(core):
     checks = [c for c in (
         launchd_check(),
         tick_check(tick, t),
-        check("agent", "brain agent", "warn" if agent["failed"] and agent["last_result"].endswith(("FAILED", "gave up")) else "ok",
+        check("agent", "rami agent", "warn" if agent["failed"] and agent["last_result"].endswith(("FAILED", "gave up")) else "ok",
               "%d runs, %d failed; last %s" % (agent["runs"], agent["failed"], agent["last"] or "never")),
         check("claude", "claude cli", "ok" if cb and os.path.isfile(cb) else "bad", cb or "not found; set CLAUDE_BIN"),
         hooks_check(core),

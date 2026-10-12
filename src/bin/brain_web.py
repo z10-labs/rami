@@ -3,8 +3,8 @@
 Listens on 127.0.0.1 only. Every API call must carry the per-run token that
 is embedded in the page, come with this server's own Host header (blocks DNS
 rebinding) and, for writes, a JSON body from no foreign Origin (blocks CSRF).
-All writes go through the same functions as the `brain` command, so formats,
-locks and the task log stay consistent. Entries made here are filed as "you".
+All writes go through the same functions as the `brain` command, so formats
+and locks stay consistent.
 """
 import hmac
 import json
@@ -35,7 +35,6 @@ CTYPES = {"js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-
           "html": "text/html; charset=utf-8"}
 TOKEN_PLACEHOLDER = "__BRAIN_TOKEN__"
 MAX_BODY = 64 * 1024
-SOURCE = "you"
 FOLLOWUP_ID_RE = re.compile(r"^[0-9a-f]{4,6}$")
 NOTE_RE = re.compile(r"^\s*-\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*$")
 ROUTES = [
@@ -84,8 +83,7 @@ def task_info(core, x, fus, sessions):
         "tickets": x.get_list("ticket"),
         "project": "" if project == brain_projects.UNFILED else project,
         "sessions": sess,
-        "log": [{"at": core.fmt(w) if w else "", "source": src, "text": txt}
-                for w, src, txt in x.log_entries()],
+        "work_done": x.work_done(),
         "followups": [f.as_dict() for f in fus if f.slug == x.slug],
     }
 
@@ -128,13 +126,13 @@ def act(core, kind, ident, body):
         status = body.get("status")
         if status not in core.STATUSES:
             raise HttpError(400, "status must be one of %s" % ", ".join(core.STATUSES))
-        core.set_field(ident, "status", status, source=SOURCE)
+        core.set_field(ident, "status", status)
     elif kind == "log":
         require_task(core, ident)
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
             raise HttpError(400, "write something to post")
-        core.log_entry(ident, text, source=SOURCE)
+        core.log_entry(ident, text)
     elif kind == "fdone":
         if not FOLLOWUP_ID_RE.match(ident):
             raise HttpError(404, "no follow-up %r" % ident)
@@ -142,7 +140,7 @@ def act(core, kind, ident, body):
         if not isinstance(result, str):
             raise HttpError(400, "result must be text")
         with core.write_lock():
-            core.tick_followup(ident, core.one_line(result, 200), source=SOURCE)
+            core.tick_followup(ident, core.one_line(result, 200))
     elif kind == "capture":
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -310,7 +308,7 @@ def serve(port, open_browser, core):
     httpd.token = secrets.token_hex(24)
     httpd.core = core
     url = "http://127.0.0.1:%d/" % httpd.server_address[1]
-    sys.stdout.write("brain serve: %s  (Ctrl-C to stop)\n" % url)
+    sys.stdout.write("brain serve: %s  (Rami; Ctrl-C to stop)\n" % url)
     sys.stdout.flush()
     if open_browser:
         webbrowser.open(url)

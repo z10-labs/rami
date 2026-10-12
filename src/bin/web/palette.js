@@ -1,4 +1,4 @@
-// ⌘K palette: search tasks, log lines, decisions and archived tasks, or run a
+// ⌘K palette: search tasks, work done, decisions and archived tasks, or run a
 // command (go to a view, capture the text, ask about it).
 import { el, api, act } from './core.js';
 
@@ -78,7 +78,7 @@ function commands(q) {
   if (!q) return go;
   return [
     ...go,
-    { type: 'ask', label: 'Ask: ' + q, hint: 'answer from the brain', run: () => onAsk(q) },
+    { type: 'ask', label: 'Ask: ' + q, hint: 'answer from rami', run: () => onAsk(q) },
     { type: 'capture', label: 'Capture: ' + q, hint: q.length > 300 ? 'first 300 characters' : 'to the inbox',
       run: () => act('api/captures', { text: q }).then((ok) => { if (ok && mode === 'search') location.hash = '#inbox'; }) },
   ];
@@ -86,7 +86,7 @@ function commands(q) {
 
 function show(q, results, error) {
   const found = results.map((r) => ({
-    type: r.type, label: r.label, hint: r.type === 'log' || r.type === 'decision' ? r.hint : r.slug,
+    type: r.type, label: r.label, hint: r.type === 'work' || r.type === 'decision' ? r.hint : r.slug,
     run: () => {
       if (r.type === 'archived') onAsk('What happened in the archived task ' + r.slug + '?');
       else location.hash = '#today/' + encodeURIComponent(r.slug);

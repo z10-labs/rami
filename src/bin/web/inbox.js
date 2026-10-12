@@ -24,7 +24,7 @@ export function mount(panel) {
         el('button', { type: 'submit', class: 'capture-add' }, 'ADD')),
       el('ul', { class: 'caps', id: 'caps', 'aria-label': 'Unsorted captures' }),
       section('reminders-wrap', 'reminders · no task', 'reminders'),
-      section('notes-wrap', 'from the brain', 'notes'),
+      section('notes-wrap', 'from rami', 'notes'),
       el('p', { class: 'empty', id: 'inbox-empty', hidden: true },
         el('span', { class: 'empty-big' }, 'inbox zero.'),
         el('span', { class: 'empty-sub' }, 'tasks went to today · notes went to their task logs'))));
@@ -76,7 +76,7 @@ function choiceBody(c) {
 const whenLabel = (when) => (when ? dayLabel(day(when)) + ' ' + hm(when) : 'next workday');
 const remindLabel = (dest, when) => 'reminder · ' + whenLabel(when) + ' · ' + (dest ? taskTitle(dest) : 'no task');
 function choiceLabel(kind, dest, when) {
-  if (kind === 'log') return 'log · ' + taskTitle(dest);
+  if (kind === 'log') return 'work done · ' + taskTitle(dest);
   if (kind === 'task') return 'new task · ' + dest;
   return remindLabel(dest, when);
 }
@@ -86,7 +86,7 @@ function choiceSelect(c) {
   const opts = [
     ['task:' + (c.kind === 'task' ? c.dest : ''), c.kind === 'task' ? choiceLabel('task', c.dest) : 'new task'],
     ['remind:' + (c.kind === 'remind' ? c.dest : ''), remindLabel(c.kind === 'remind' ? c.dest : '', c.when)],
-    ...open.map((t) => ['log:' + t.slug, 'log · ' + (t.title || t.slug)]),
+    ...open.map((t) => ['log:' + t.slug, 'work done · ' + (t.title || t.slug)]),
   ];
   const current = choiceOf(c);
   if (!opts.some(([v]) => v === current)) opts.unshift([current, choiceLabel(...current.split(':'), c.when)]);
@@ -124,7 +124,7 @@ function reminderRow(f) {
 function noteRow(n) {
   return el('li', { class: 'cap' },
     el('span', { class: 'cap-time' }, n.at ? shortWhen(n.at) : ''),
-    el('span', { class: 'cap-src cap-brain' }, 'BRAIN'),
+    el('span', { class: 'cap-src cap-brain' }, 'RAMI'),
     el('div', { class: 'cap-main' },
       el('span', { class: 'cap-text' }, n.text),
       n.task && el('a', { class: 'sugg-link', href: '#today/' + encodeURIComponent(n.task) }, '↳ ' + taskTitle(n.task))),
@@ -141,7 +141,7 @@ function render() {
   const { captures, notes, reminders } = store.data;
   for (const id of picked.keys()) if (!captures.some((c) => c.id === id)) picked.delete(id);
   $('inbox-sub').textContent = captures.length + ' unsorted · ' + reminders.length + ' reminders · ' +
-    notes.length + ' from the brain';
+    notes.length + ' from rami';
   $('process-all').hidden = captures.length === 0;
   $('caps').replaceChildren(...[...captures].reverse().map(capRow));
   $('reminders').replaceChildren(...reminders.map(reminderRow));

@@ -22,8 +22,8 @@ second brain at {brain} (your working directory). It is {now} local time.
 
 How to look things up (read-only; you cannot and must not change anything):
 - The board below lists open tasks, follow-ups and captures.
-- `{cmd} show SLUG` prints a task: Goal, Direction, Next and its full Log.
-- `{cmd} search "words"` finds tasks, log lines, decisions and archived tasks.
+- `{cmd} show SLUG` prints a task: Goal, Direction, Work done and Next.
+- `{cmd} search "words"` finds tasks, work done, decisions and archived tasks.
 - `{cmd} projects` groups tasks by repository.
 - decisions.md holds big decisions; archive/ holds finished tasks.
 Call the brain command by its full path, one command per Bash call.
