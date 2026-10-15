@@ -358,30 +358,48 @@ button.chip { font: 500 11px var(--mono); }
 /* ---------------------------------------------------------------- graph */
 .graph { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
 .graph-canvas { position: relative; min-height: 420px; overflow: hidden; border-right: 1px solid var(--line);
-  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px; }
-.graph-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.edge { stroke: var(--mute); stroke-width: 1; opacity: .55; }
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px;
+  touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; outline: none; }
+.graph-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--ink); }
+.graph-canvas.is-dragging { cursor: grabbing; }
+.graph-canvas svg, .graph-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+.graph-layer { pointer-events: none; }
+.edge { stroke: var(--mute); stroke-width: 1; opacity: .55; transition: opacity var(--fast); }
 .edge-session { stroke-dasharray: 4 4; }
 .edge-decision { stroke: var(--acc2); }
+.edge.is-far { opacity: .18; }
 .edge.is-hot { stroke: var(--acc); stroke-width: 2; opacity: 1; }
-.gnode { position: absolute; transform: translate(-50%, -50%); border: 0; background: transparent; padding: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink); transition: opacity var(--fast); }
-.gnode.is-far .gdot { opacity: .45; }
+/* A node is a zero-size point at its position; dot and label hang off it. */
+.gnode { position: absolute; left: 0; top: 0; width: 0; height: 0; border: 0; background: transparent; padding: 0;
+  color: var(--ink); pointer-events: auto; cursor: pointer; outline: none; transition: opacity var(--fast); }
+.graph-canvas.is-dragging .gnode { cursor: grabbing; }
+.gdot { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); display: block; border-radius: 50%;
+  border: 1.5px solid var(--ink); background: var(--key); transition: transform var(--fast) var(--ease), opacity var(--fast); }
+.gnode:hover .gdot { transform: translate(-50%, -50%) scale(1.18); }
+.gnode:focus-visible .gdot { box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--acc2); }
+.gnode.is-far .gdot { opacity: .35; }
 .gnode.is-far .glabel { color: var(--mute); }
-.gnode-l { align-items: flex-start; }
-.gnode-l .gdot { margin-left: 4px; }
-.gnode-r { align-items: flex-end; }
-.gnode-r .gdot { margin-right: 4px; }
-.gdot { display: block; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--key); }
 .gnode-project .gdot { background: var(--ink); }
 .gnode-task.st-active .gdot { background: var(--acc); }
 .gnode-task.st-blocked .gdot { background: var(--bad); }
 .gnode-task.st-waiting .gdot { background: var(--warn); }
 .gnode-decision .gdot { background: var(--acc2); border-radius: 3px; }
 .gnode.is-picked .gdot { box-shadow: 0 0 0 4px var(--panel), 0 0 0 6px var(--ink); }
-.glabel { font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel); padding: 1px 4px;
-  white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-.graph-canvas.is-narrow .gnode-task:not(.is-picked) .glabel, .graph-canvas.is-narrow .gnode-decision:not(.is-picked) .glabel { display: none; }
+.glabel { position: absolute; left: 0; top: calc(var(--r, 6px) + 6px); transform: translateX(calc(-50% + var(--dx, 0px)));
+  font: 600 10px/14px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel);
+  padding: 1px 4px; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.glabel.is-up { top: auto; bottom: calc(var(--r, 6px) + 6px); }
+.glabel.is-hidden { visibility: hidden; }
+.gnode-project .glabel { font-weight: 700; }
+.graph-tools { position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.gtool { min-width: 34px; height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--key);
+  color: var(--key-ink); box-shadow: 0 2px 0 var(--line); font: 600 13px var(--mono); cursor: pointer; }
+.gtool:last-child { font-size: 10px; letter-spacing: .06em; }
+.gtool:hover { border-color: var(--ink); }
+.gtool:active { transform: translateY(2px); box-shadow: none; }
+.gtool:focus-visible { outline: 2px solid var(--acc2); outline-offset: 2px; }
+.graph-hint { position: absolute; left: 12px; bottom: 10px; margin: 0; font: 500 10px var(--mono); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--mute); pointer-events: none; }
 .graph-side { padding: 24px; display: flex; flex-direction: column; gap: 12px; overflow: auto; min-width: 0; }
 .gside-kind { color: var(--acc-text); }
 .gside-title { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
@@ -441,6 +459,7 @@ button.chip { font: 500 11px var(--mono); }
   .sugg { white-space: normal; text-align: left; }
   .cap-time { display: none; }
   .panel-head .btn-acc { padding: 7px 10px; }
+  .graph-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

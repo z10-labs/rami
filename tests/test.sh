@@ -529,7 +529,7 @@ check "serve prints a 127.0.0.1 URL" "echo \"$URL\" | grep -q '^http://127.0.0.1
 page="$(curl -s "$URL")"
 TOKEN="$(echo "$page" | sed -n 's/.*name="brain-token" content="\([0-9a-f]*\)".*/\1/p' | head -1)"
 check "page served with a per-run token" "[ \${#TOKEN} -ge 32 ]"
-check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js look.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
+check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js graph-sim.js look.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
 check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
 api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"
