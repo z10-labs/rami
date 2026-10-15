@@ -573,4 +573,9 @@ Task {
     default: fail("usage: rami-rec check|calls|record --out DIR|transcribe FILE --out DIR")
     }
 }
-dispatchMain()
+// A real AppKit main loop, not dispatchMain(): ScreenCaptureKit puts its
+// recording indicator in the menu bar, which must happen on the main thread
+// (dispatchMain parks that thread and runs main-queue work elsewhere).
+// .prohibited: no Dock icon and no menu bar of our own.
+NSApplication.shared.setActivationPolicy(.prohibited)
+NSApplication.shared.run()
