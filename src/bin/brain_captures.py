@@ -13,7 +13,7 @@ import re
 
 CAP_RE = re.compile(r"^\s*-\s*\[( |x|X)\]\s*(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})\s*\|\s*([A-Z]+)\s*\|\s*(.*?)\s*$")
 KINDS = ("log", "task", "remind")
-SOURCES = ("TEXT", "VOICE", "CLIP", "WEB")
+SOURCES = ("TEXT", "VOICE", "CLIP", "WEB", "MEET")
 TEXT_MAX = 300
 REMIND_RE = re.compile(r"^\s*(remind|reminder|don'?t forget|follow ?up)\b", re.I)
 STOP = set("""a an and are as at be but by can do for from get got had has have how i if in into is it

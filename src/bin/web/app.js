@@ -6,9 +6,10 @@ import * as ask from './ask.js';
 import * as graph from './graph.js';
 import * as projects from './projects.js';
 import * as system from './system.js';
+import * as meet from './meet.js';
 import * as palette from './palette.js';
 
-// Numbers follow the design (07 meet is not built).
+// Numbers follow the design.
 const VIEWS = [
   { id: 'inbox', k: '1', label: 'Inbox', mod: inbox, badge: (d) => inbox.inboxCount(d) },
   { id: 'today', k: '2', label: 'Today', mod: today, badge: (d) => today.dueCount(d) },
@@ -16,6 +17,7 @@ const VIEWS = [
   { id: 'graph', k: '4', label: 'Graph', mod: graph, badge: () => 0 },
   { id: 'projects', k: '5', label: 'Projects', mod: projects, badge: () => 0 },
   { id: 'system', k: '6', label: 'System', mod: system, badge: () => 0 },
+  { id: 'meet', k: '7', label: 'Meet', mod: meet, badge: (d) => (d.meet && (d.meet.recording || d.meet.call.detected) ? '●' : 0) },
 ];
 const DEFAULT = 'today';
 let current = null;
@@ -54,7 +56,7 @@ function renderRail() {
     const badge = store.data ? v.badge(store.data) : 0;
     return el('a', {
       class: 'key' + (on ? ' is-on' : ''), href: '#' + v.id, 'aria-current': on ? 'page' : null,
-      'aria-label': v.label + (badge ? ' (' + badge + ')' : '') + ', key ' + v.k,
+      'aria-label': v.label + (badge ? ' (' + (badge === '●' ? 'live' : badge) + ')' : '') + ', key ' + v.k,
     },
       el('span', { class: 'key-top' }, el('span', { class: 'key-k' }, v.k),
         badge ? el('span', { class: 'key-badge' }, String(badge)) : el('span', { class: 'key-dot' })),
@@ -67,6 +69,20 @@ function renderStatus() {
   const d = store.data;
   const open = d.tasks.filter((t) => t.status !== 'done').length;
   $('counts').textContent = open + ' open · ' + today.dueCount(d) + ' due · ' + inbox.inboxCount(d) + ' in';
+  const rec = d.meet && d.meet.recording;
+  $('rec-pill').hidden = !rec;
+  if (rec) $('rec-pill').textContent = '● REC ' + Math.floor(rec.elapsed / 60) + ':' + String(Math.floor(rec.elapsed % 60)).padStart(2, '0');
+}
+
+// A call that starts while the page is open (and Meet is not on screen) gets a
+// toast offering to record; once per call.
+let callToasted = false;
+function toastCall() {
+  const call = store.data.meet && store.data.meet.call;
+  if (!call || !call.detected) { callToasted = false; return; }
+  if (callToasted || current.id === 'meet') return;
+  callToasted = true;
+  toast('call detected · ' + call.app, 'Record it? Rami links what is said to your tasks.', '#meet', 'open meet');
 }
 
 // A note from Rami that arrives while the page is open pops up in the corner,
@@ -80,19 +96,24 @@ function toastNewNotes() {
   for (const n of store.data.notes) {
     if (knownNotes.has(n.id)) continue;
     knownNotes.add(n.id);
-    const item = el('div', { class: 'toast', role: 'status' },
-      el('span', { class: 'toast-who' }, 'rami'),
-      el('span', { class: 'toast-text' }, n.text),
-      el('span', { class: 'toast-actions' },
-        el('a', { href: '#inbox', class: 'toast-link', onclick: () => item.remove() }, 'open inbox'),
-        el('button', { type: 'button', class: 'toast-x', 'aria-label': 'Close', onclick: () => item.remove() }, '×')));
-    $('toasts').append(item);
-    setTimeout(() => item.remove(), TOAST_MS);
+    toast('rami', n.text, '#inbox', 'open inbox');
   }
+}
+
+function toast(who, text, href, linkText) {
+  const item = el('div', { class: 'toast', role: 'status' },
+    el('span', { class: 'toast-who' }, who),
+    el('span', { class: 'toast-text' }, text),
+    el('span', { class: 'toast-actions' },
+      el('a', { href, class: 'toast-link', onclick: () => item.remove() }, linkText),
+      el('button', { type: 'button', class: 'toast-x', 'aria-label': 'Close', onclick: () => item.remove() }, '×')));
+  $('toasts').append(item);
+  setTimeout(() => item.remove(), TOAST_MS);
 }
 
 function render() {
   toastNewNotes();
+  toastCall();
   renderStatus();
   renderRail();
   current.mod.update();

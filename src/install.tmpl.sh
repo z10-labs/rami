@@ -75,6 +75,10 @@ mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 @@PUT bin/brain_status.py 644@@
 @@PUT bin/brain_ask.py 644@@
 @@PUT bin/brain_graph.py 644@@
+@@PUT bin/brain_meet.py 644@@
+@@PUT bin/brain_meet_refs.py 644@@
+@@PUT bin/rami-rec.swift 644@@
+@@PUT bin/rami-rec.plist 644@@
 @@PUT bin/web/index.html 644@@
 @@PUT bin/web/app.css 644@@
 @@PUT bin/web/app.js 644@@
@@ -85,6 +89,7 @@ mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 @@PUT bin/web/ask.js 644@@
 @@PUT bin/web/projects.js 644@@
 @@PUT bin/web/system.js 644@@
+@@PUT bin/web/meet.js 644@@
 @@PUT bin/web/graph.js 644@@
 @@PUT bin/web/look.js 644@@
 @@PUT bin/brain 755@@
@@ -94,6 +99,26 @@ mkdir -p "$BRAIN/tasks" "$BRAIN/archive" "$BRAIN/bin/web" "$BRAIN/.state"
 @@PUT README.md 644@@
 @@KEEP tasks/_template.md@@
 @@PUT .state/gitignore.default=gitignore 644@@
+# Meet's recorder is built on this Mac against its own SDK (needs macOS 26 and
+# swiftc). Rebuilt only when its source changed; skipped quietly when it cannot be.
+REC="$BRAIN/bin/rami-rec"
+if [ "$OS" = "Darwin" ] && [ "${BRAIN_NO_SWIFT:-}" != 1 ]; then
+  MACOS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+  if [ "${MACOS_MAJOR:-0}" -ge 26 ] && command -v swiftc >/dev/null 2>&1; then
+    if [ ! -x "$REC" ] || [ "$BRAIN/bin/rami-rec.swift" -nt "$REC" ] || [ "$BRAIN/bin/rami-rec.plist" -nt "$REC" ]; then
+      say "building the meeting recorder (about a minute)"
+      if swiftc -O -swift-version 5 -o "$REC.new" "$BRAIN/bin/rami-rec.swift" \
+          -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$BRAIN/bin/rami-rec.plist" \
+          > "$BRAIN/.state/rami-rec-build.log" 2>&1; then
+        mv "$REC.new" "$REC"; say "built $REC"
+      else
+        rm -f "$REC.new"; say "could not build the meeting recorder; Meet stays off (see .state/rami-rec-build.log)"
+      fi
+    fi
+  else
+    say "Meet needs macOS 26 and swiftc (xcode-select --install); recording stays off"
+  fi
+fi
 # .gitignore: add any missing default lines, keep the owner's own lines.
 touch "$BRAIN/.gitignore"
 while IFS= read -r line; do

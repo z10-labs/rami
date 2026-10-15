@@ -26,6 +26,7 @@ How to look things up (read-only; you cannot and must not change anything):
 - `{cmd} search "words"` finds tasks, work done, decisions and archived tasks.
 - `{cmd} projects` groups tasks by repository.
 - decisions.md holds big decisions; archive/ holds finished tasks.
+- meetings/*/meeting.md holds recorded meetings: summary, action items, transcript.
 Call the brain command by its full path, one command per Bash call.
 
 Answer in at most 6 short lines, plainly, with dates and task names where they
