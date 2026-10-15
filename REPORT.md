@@ -183,3 +183,14 @@ Built from the "07 meetings" screen of the Claude Design file (standby, call det
 **Live test (2026-10-16)**: after the owner granted Screen Recording, screen + mic recorded 20 s: `screen.mov` (H.264, 1470x956, about 8.7 MB per 20 s, so roughly 1.5 GB an hour), mic audio, a timed transcript, a clean stop on SIGTERM. The first try crashed: ScreenCaptureKit puts its recording indicator in the menu bar, which needs the real main thread, and `dispatchMain()` runs main-queue work on another thread; the recorder now runs an AppKit main loop with no Dock icon. Screen Recording is granted per app: the app that runs `brain serve` needs it.
 
 **Not verified yet**: system audio from a real call; long calls (memory, file sizes); Teams/Meet detection in the browser (the heuristic is "mic in use while a call app or browser runs").
+
+## Update 2026-10-16 (night): fixes from the first real call
+
+The owner recorded a call with Meet, and its own notes listed four problems:
+
+- **Timer stuck at zero and levels not moving**: the recorder's live.json timer was a local variable, released when recording started, so live.json was written only at the end. Now kept for the whole recording; checked live (elapsed counts up, levels change).
+- **No prompt when a meeting starts**: `brain serve` now watches calls every 3 s and shows a native "Record this call?" pop-up (`rami-rec ask`, above all windows, Not now / Esc / 45 s means no), once per call.
+- **Recording kept going after the call**: once a call has been seen, the recording stops 20 s after no call app or browser takes mic input, and a note says so. A recording that never saw a call does not stop by itself.
+- Both rest on a better signal: `rami-rec calls` now lists the processes taking audio input (CoreAudio process objects, macOS 14.2+), leaving out Rami's recorder and Apple's speech service, instead of "the mic is busy", which our own recording always made true. Checked live: another program on the mic shows up; the recorder alone does not.
+
+`tests/test.sh` 235/235 (6 new: the pop-up once per call, yes starts, no records nothing, stop after 20 s and not before, no stop without a call, the switch).

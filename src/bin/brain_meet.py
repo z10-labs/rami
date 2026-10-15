@@ -26,8 +26,17 @@ import brain_meet_refs
 
 ID_RE = re.compile(r"^\d{8}-\d{4}(-\d{1,2})?$")
 TITLE_MAX = 120
-SETTINGS = ("screen", "system", "mic", "detect", "notes")
-DEFAULT_SETTINGS = {"screen": True, "system": True, "mic": True, "detect": True, "notes": True}
+SETTINGS = ("screen", "system", "mic", "detect", "autostop", "notes")
+DEFAULT_SETTINGS = {"screen": True, "system": True, "mic": True, "detect": True, "autostop": True, "notes": True}
+END_GRACE_SECONDS = 20    # the call app has let go of the mic this long: the call is over
+WATCH_SECONDS = 3
+ASK_TIMEOUT = 60
+# Apps (bundle id prefixes) whose use of the microphone means a call.
+CALL_IDS = (("us.zoom", "Zoom"), ("com.microsoft.teams", "Teams"), ("com.apple.FaceTime", "FaceTime"),
+            ("com.cisco", "Webex"), ("com.hnc.Discord", "Discord"), ("com.tinyspeck.slackmacgap", "Slack"),
+            ("com.google.Chrome", "Chrome"), ("com.apple.WebKit", "Safari"), ("com.apple.Safari", "Safari"),
+            ("company.thebrowser", "Arc"), ("org.mozilla", "Firefox"), ("com.microsoft.edgemac", "Edge"),
+            ("com.brave", "Brave"))
 MAX_MINUTES = 240
 STOP_WAIT_SECONDS = 20
 CHECK_TTL = 60
@@ -158,16 +167,27 @@ def availability(core):
     return cached("check", CHECK_TTL, probe)
 
 
+def call_app(users):
+    for u in users:
+        for prefix, name in CALL_IDS:
+            if u.startswith(prefix):
+                return name
+    return ""
+
+
 def call_state(core):
-    """Is a call going on? Zoom's in-call process, or the mic in use while a call app or browser runs."""
+    """Is a call going on? Zoom's in-call process, or a call app or browser taking
+    microphone input (Rami's own recorder does not count)."""
     def probe():
         info, _ = run_helper(core, "calls", timeout=5)
         if not info:
             return {"detected": False, "app": ""}
-        zoom = shutil.which("pgrep") and subprocess.call(["pgrep", "-xq", "CptHost"]) == 0
-        apps = info.get("apps") or []
-        if zoom:
+        if shutil.which("pgrep") and subprocess.call(["pgrep", "-xq", "CptHost"]) == 0:
             return {"detected": True, "app": "Zoom"}
+        if info.get("per_process"):
+            app = call_app(info.get("mic_users") or [])
+            return {"detected": bool(app), "app": app}
+        apps = info.get("apps") or []   # older macOS: only "the mic is in use"
         if info.get("mic_busy") and (apps or info.get("browser")):
             return {"detected": True, "app": apps[0] if apps else "a browser call"}
         return {"detected": False, "app": ""}
@@ -585,6 +605,77 @@ def write_markdown(core, m, s, ls):
             out += ["## " + head, ""] + ["- " + i for i in items] + [""]
     out += ["## Transcript", ""] + ["[%s] %s: %s" % (clock(x["t"]), x["who"], x["text"]) for x in ls]
     core.write_atomic(os.path.join(mdir(core, m["id"]), "meeting.md"), "\n".join(out) + "\n")
+
+
+# ---------------------------------------------------------------- watching calls
+
+_asking = threading.Lock()
+
+
+def ask_owner(core, app):
+    """The pop-up: True if the owner chose Record."""
+    info, err = run_helper(core, "ask", "--app", app, timeout=ASK_TIMEOUT)
+    if err:
+        sys.stderr.write("brain meet: could not ask about the call: %s\n" % err)
+    return bool(info and info.get("record"))
+
+
+def ask_and_start(core, app):
+    try:
+        if ask_owner(core, app):
+            try:
+                start(core, app=app)
+            except MeetError:
+                pass   # recording already, started from the page meanwhile
+    except Exception as e:
+        sys.stderr.write("brain meet: %s\n" % e)
+    finally:
+        _asking.release()
+
+
+def watch_tick(core, st, now=None):
+    """One look at calls, every few seconds while `brain serve` runs.
+    Idle: a call that starts gets the pop-up once. Recording: once a call has
+    been seen, the recording stops END_GRACE_SECONDS after the call ends.
+    A recording with no call in it (a meeting in the room) never stops by itself."""
+    now = time.time() if now is None else now
+    s = settings(core)
+    if not os.access(helper(core), os.X_OK):
+        return
+    mid = check_current(core)
+    if mid:
+        st["asked"] = None
+        if not s["autostop"]:
+            return
+        call = call_state(core)
+        if call["detected"]:
+            st["saw_call"], st["quiet_since"] = mid, None
+        elif st.get("saw_call") == mid:
+            st["quiet_since"] = st.get("quiet_since") or now
+            if now - st["quiet_since"] >= END_GRACE_SECONDS:
+                st["quiet_since"] = None
+                stop(core)
+                core.notify("Rami stopped recording: the call ended. The notes are on the Meet page.", key="meet-end-" + mid)
+        return
+    st["quiet_since"] = None
+    call = call_state(core) if s["detect"] else {"detected": False, "app": ""}
+    if not call["detected"]:
+        st["asked"] = None
+        return
+    if st.get("asked") == call["app"] or not _asking.acquire(False):
+        return
+    st["asked"] = call["app"]
+    threading.Thread(target=ask_and_start, args=(core, call["app"]), daemon=True).start()
+
+
+def watch(core):
+    st = {}
+    while True:
+        time.sleep(WATCH_SECONDS)
+        try:
+            watch_tick(core, st)
+        except Exception as e:   # the watcher must outlive any one bad tick
+            sys.stderr.write("brain meet: watch: %s: %s\n" % (type(e).__name__, e))
 
 
 # ---------------------------------------------------------------- library

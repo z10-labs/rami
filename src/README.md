@@ -144,9 +144,13 @@ Cmd-K (or /) searches; c captures a note from any screen.
 - **System (6):** health checks (background job, last tick, agent, hooks,
   git), the notifications switch, agent model, the page's look (auto, light,
   dark, steel: the design's three directions), and 24 hours of activity.
-- **Meet (7):** record a call on this Mac (macOS 26 or later). When Zoom,
-  Teams, FaceTime or a browser call is using the microphone, Rami offers to
-  record (it never starts on its own). It captures the screen, your mic
+- **Meet (7):** record a call on this Mac (macOS 26 or later). While
+  `brain serve` runs, a call that starts (Zoom, Teams, FaceTime, Slack,
+  Discord, or a call in a browser taking the microphone) brings up a
+  "Record this call?" pop-up; Record starts it, Not now or no answer leaves
+  it alone (it never starts on its own). Once a call has been seen, the
+  recording stops 20 s after the call app lets go of the mic; a recording
+  with no call in it (a meeting in the room) runs until you press STOP. It captures the screen, your mic
   ("you") and the call's audio ("them"), and Apple's on-device speech model
   writes the transcript as people talk. Cards appear as things are said:
   **link** (this sounds like one of your tasks), **answer** (a question, with

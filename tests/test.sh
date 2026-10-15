@@ -528,7 +528,8 @@ cat > "$WORK/bin/rami-rec" <<'EOF'
 #!/bin/bash
 case "$1" in
 check) echo '{"speech":true,"locale":"en-US","model_installed":true,"screen":"granted","mic":"granted"}' ;;
-calls) if [ -f "$FAKE_CALL" ]; then echo '{"mic_busy":true,"apps":["Zoom"],"browser":false}'; else echo '{"mic_busy":false,"apps":[],"browser":false}'; fi ;;
+calls) if [ -f "$FAKE_CALL" ]; then echo '{"mic_busy":true,"mic_users":["us.zoom.xos"],"per_process":true,"apps":["Zoom"],"browser":false}'; else echo '{"mic_busy":false,"mic_users":[],"per_process":true,"apps":["Zoom"],"browser":false}'; fi ;;
+ask) echo "$*" >> "$FAKE_ASK_LOG"; if [ -f "$FAKE_ASK" ]; then echo '{"record":true}'; else echo '{"record":false}'; fi ;;
 record)
   echo "$*" > "$FAKE_REC_ARGS"
   while [ $# -gt 0 ]; do [ "$1" = --out ] && out="$2"; shift; done
@@ -545,7 +546,7 @@ T
 esac
 EOF
 chmod +x "$WORK/bin/rami-rec"
-export RAMI_REC="$WORK/bin/rami-rec" FAKE_CALL="$WORK/fake-call" FAKE_REC_ARGS="$WORK/rec-args"
+export RAMI_REC="$WORK/bin/rami-rec" FAKE_CALL="$WORK/fake-call" FAKE_REC_ARGS="$WORK/rec-args" FAKE_ASK="$WORK/fake-ask" FAKE_ASK_LOG="$WORK/ask-log"
 touch "$FAKE_CALL"
 "$B" serve --port 0 > "$WORK/serve.out" 2>&1 & srv=$!
 for i in $(seq 1 50); do grep -q '^brain serve: http' "$WORK/serve.out" 2>/dev/null && break; sleep 0.1; done
@@ -713,6 +714,50 @@ assert a == 1 and heard == ['Can you book the room?', 'I will send the invite.']
 rm -f "$FAKE_CALL"
 kill $srv 2>/dev/null; wait $srv 2>/dev/null
 rm -f "$wf"
+
+echo "== meet: watching calls (pop-up and auto-stop)"
+W="import sys, time; sys.path.insert(0, '$HOME/brain/bin'); import brain as core, brain_meet as M"
+check "the pop-up was offered once while serve ran, and a no started nothing" "[ \"\$(grep -c -- '--app Zoom' $WORK/ask-log)\" -ge 1 ] && [ \"\$(grep -c -- '--app Zoom' $WORK/ask-log)\" -le 3 ]"
+touch "$FAKE_CALL" "$FAKE_ASK"; : > "$WORK/ask-log"
+check "a call that starts gets the pop-up; yes starts recording" "python3 -c \"
+$W
+st = {}; M.watch_tick(core, st)
+for i in range(50):
+    if M.current_id(core): break
+    time.sleep(0.1)
+mid = M.current_id(core); assert mid and M.meta(core, mid)['app'] == 'Zoom', mid
+M.watch_tick(core, st); M.watch_tick(core, st)
+assert open('$WORK/ask-log').read().count('--app Zoom') == 1
+\""
+check "the recording stops 20 s after the call ends, and only then" "rm -f $FAKE_CALL; python3 -c \"
+$W
+mid = M.current_id(core); st = {'saw_call': mid}
+M._cache.clear(); M.watch_tick(core, st, now=1000)
+assert M.current_id(core) == mid, 'stopped too early'
+M.watch_tick(core, st, now=1015); assert M.current_id(core) == mid
+M.watch_tick(core, st, now=1021); assert M.current_id(core) is None, 'did not stop'
+assert M.meta(core, mid)['state'] in ('processing', 'done')
+\" && grep -q 'the call ended' $HOME/brain/inbox.md"
+check "a recording with no call in it never stops by itself" "python3 -c \"
+$W
+m = M.start(core, 'In the room'); st = {}
+M._cache.clear(); M.watch_tick(core, st, now=1000); M.watch_tick(core, st, now=5000)
+assert M.current_id(core) == m['id']
+M.stop(core)
+\""
+rm -f "$FAKE_ASK"; touch "$FAKE_CALL"; : > "$WORK/ask-log"
+check "no at the pop-up records nothing and does not ask again for the same call" "python3 -c \"
+$W
+st = {}; M._cache.clear(); M.watch_tick(core, st); time.sleep(0.5); M.watch_tick(core, st); time.sleep(0.3)
+assert M.current_id(core) is None and open('$WORK/ask-log').read().count('--app Zoom') == 1
+\""
+check "auto-stop can be switched off" "python3 -c \"
+$W
+M.set_setting(core, 'autostop', False); m = M.start(core, 'x'); st = {'saw_call': m['id']}
+import os; os.remove('$FAKE_CALL'); M._cache.clear()
+M.watch_tick(core, st, now=1000); M.watch_tick(core, st, now=2000)
+assert M.current_id(core) == m['id']; M.stop(core); M.set_setting(core, 'autostop', True)
+\""
 
 echo "== tick lock"
 mkdir -p "$HOME/brain/.state/tick.lock"; sleep 300 & echo $! > "$HOME/brain/.state/tick.lock/pid"; holder=$!

@@ -2173,6 +2173,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import webbrowser
 
 import brain_ask
@@ -2514,6 +2515,8 @@ def serve(port, open_browser, core):
         raise core.BrainError("cannot listen on 127.0.0.1:%d (%s); try --port N" % (port, e))
     httpd.token = secrets.token_hex(24)
     httpd.core = core
+    # Calls are watched while the server runs: a pop-up when one starts, a stop when it ends.
+    threading.Thread(target=brain_meet.watch, args=(core,), daemon=True).start()
     url = "http://127.0.0.1:%d/" % httpd.server_address[1]
     sys.stdout.write("brain serve: %s  (Rami; Ctrl-C to stop)\n" % url)
     sys.stdout.flush()
@@ -3235,8 +3238,17 @@ import brain_meet_refs
 
 ID_RE = re.compile(r"^\d{8}-\d{4}(-\d{1,2})?$")
 TITLE_MAX = 120
-SETTINGS = ("screen", "system", "mic", "detect", "notes")
-DEFAULT_SETTINGS = {"screen": True, "system": True, "mic": True, "detect": True, "notes": True}
+SETTINGS = ("screen", "system", "mic", "detect", "autostop", "notes")
+DEFAULT_SETTINGS = {"screen": True, "system": True, "mic": True, "detect": True, "autostop": True, "notes": True}
+END_GRACE_SECONDS = 20    # the call app has let go of the mic this long: the call is over
+WATCH_SECONDS = 3
+ASK_TIMEOUT = 60
+# Apps (bundle id prefixes) whose use of the microphone means a call.
+CALL_IDS = (("us.zoom", "Zoom"), ("com.microsoft.teams", "Teams"), ("com.apple.FaceTime", "FaceTime"),
+            ("com.cisco", "Webex"), ("com.hnc.Discord", "Discord"), ("com.tinyspeck.slackmacgap", "Slack"),
+            ("com.google.Chrome", "Chrome"), ("com.apple.WebKit", "Safari"), ("com.apple.Safari", "Safari"),
+            ("company.thebrowser", "Arc"), ("org.mozilla", "Firefox"), ("com.microsoft.edgemac", "Edge"),
+            ("com.brave", "Brave"))
 MAX_MINUTES = 240
 STOP_WAIT_SECONDS = 20
 CHECK_TTL = 60
@@ -3367,16 +3379,27 @@ def availability(core):
     return cached("check", CHECK_TTL, probe)
 
 
+def call_app(users):
+    for u in users:
+        for prefix, name in CALL_IDS:
+            if u.startswith(prefix):
+                return name
+    return ""
+
+
 def call_state(core):
-    """Is a call going on? Zoom's in-call process, or the mic in use while a call app or browser runs."""
+    """Is a call going on? Zoom's in-call process, or a call app or browser taking
+    microphone input (Rami's own recorder does not count)."""
     def probe():
         info, _ = run_helper(core, "calls", timeout=5)
         if not info:
             return {"detected": False, "app": ""}
-        zoom = shutil.which("pgrep") and subprocess.call(["pgrep", "-xq", "CptHost"]) == 0
-        apps = info.get("apps") or []
-        if zoom:
+        if shutil.which("pgrep") and subprocess.call(["pgrep", "-xq", "CptHost"]) == 0:
             return {"detected": True, "app": "Zoom"}
+        if info.get("per_process"):
+            app = call_app(info.get("mic_users") or [])
+            return {"detected": bool(app), "app": app}
+        apps = info.get("apps") or []   # older macOS: only "the mic is in use"
         if info.get("mic_busy") and (apps or info.get("browser")):
             return {"detected": True, "app": apps[0] if apps else "a browser call"}
         return {"detected": False, "app": ""}
@@ -3796,6 +3819,77 @@ def write_markdown(core, m, s, ls):
     core.write_atomic(os.path.join(mdir(core, m["id"]), "meeting.md"), "\n".join(out) + "\n")
 
 
+# ---------------------------------------------------------------- watching calls
+
+_asking = threading.Lock()
+
+
+def ask_owner(core, app):
+    """The pop-up: True if the owner chose Record."""
+    info, err = run_helper(core, "ask", "--app", app, timeout=ASK_TIMEOUT)
+    if err:
+        sys.stderr.write("brain meet: could not ask about the call: %s\n" % err)
+    return bool(info and info.get("record"))
+
+
+def ask_and_start(core, app):
+    try:
+        if ask_owner(core, app):
+            try:
+                start(core, app=app)
+            except MeetError:
+                pass   # recording already, started from the page meanwhile
+    except Exception as e:
+        sys.stderr.write("brain meet: %s\n" % e)
+    finally:
+        _asking.release()
+
+
+def watch_tick(core, st, now=None):
+    """One look at calls, every few seconds while `brain serve` runs.
+    Idle: a call that starts gets the pop-up once. Recording: once a call has
+    been seen, the recording stops END_GRACE_SECONDS after the call ends.
+    A recording with no call in it (a meeting in the room) never stops by itself."""
+    now = time.time() if now is None else now
+    s = settings(core)
+    if not os.access(helper(core), os.X_OK):
+        return
+    mid = check_current(core)
+    if mid:
+        st["asked"] = None
+        if not s["autostop"]:
+            return
+        call = call_state(core)
+        if call["detected"]:
+            st["saw_call"], st["quiet_since"] = mid, None
+        elif st.get("saw_call") == mid:
+            st["quiet_since"] = st.get("quiet_since") or now
+            if now - st["quiet_since"] >= END_GRACE_SECONDS:
+                st["quiet_since"] = None
+                stop(core)
+                core.notify("Rami stopped recording: the call ended. The notes are on the Meet page.", key="meet-end-" + mid)
+        return
+    st["quiet_since"] = None
+    call = call_state(core) if s["detect"] else {"detected": False, "app": ""}
+    if not call["detected"]:
+        st["asked"] = None
+        return
+    if st.get("asked") == call["app"] or not _asking.acquire(False):
+        return
+    st["asked"] = call["app"]
+    threading.Thread(target=ask_and_start, args=(core, call["app"]), daemon=True).start()
+
+
+def watch(core):
+    st = {}
+    while True:
+        time.sleep(WATCH_SECONDS)
+        try:
+            watch_tick(core, st)
+        except Exception as e:   # the watcher must outlive any one bad tick
+            sys.stderr.write("brain meet: watch: %s: %s\n" % (type(e).__name__, e))
+
+
 # ---------------------------------------------------------------- library
 
 def size_of(d):
@@ -3995,7 +4089,8 @@ put_file "$BRAIN/bin/rami-rec.swift" 644 <<'__BRAIN_EOF__'
 // the machine. Built by the installer with swiftc; brain_meet.py drives it.
 //
 //   rami-rec check                      JSON: what is available and permitted
-//   rami-rec calls                      JSON: is the mic in use, which call apps run
+//   rami-rec calls                      JSON: who else uses the mic, which call apps run
+//   rami-rec ask --app NAME             pop-up "Record this call?"; JSON {"record": bool}
 //   rami-rec record --out DIR [--no-screen] [--no-system] [--no-mic] [--locale ID] [--max-minutes N]
 //   rami-rec transcribe FILE --out DIR [--who you|them] [--locale ID]
 //
@@ -4016,6 +4111,9 @@ let CALL_APPS: [String: String] = [
     "com.apple.FaceTime": "FaceTime", "com.cisco.webexmeetingsapp": "Webex", "com.hnc.Discord": "Discord",
     "com.tinyspeck.slackmacgap": "Slack",
 ]
+// System services that take input on our behalf (our own transcription) or on their own (Siri).
+let SYSTEM_LISTENERS: Set<String> = ["com.apple.CoreSpeech", "com.apple.corespeechd", "com.apple.SpeechRecognitionCore",
+                                     "com.apple.siri", "com.apple.assistantd", "com.apple.DictationIM"]
 let BROWSERS: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
                              "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.Browser"]
 
@@ -4388,6 +4486,7 @@ struct Args {
     var out: String?
     var locale: String?
     var who = "them"
+    var app = "a call app"
     var screen = true, system = true, mic = true
     var maxMinutes = 240.0
 
@@ -4399,6 +4498,7 @@ struct Args {
             case "--out": out = it.next()
             case "--locale": locale = it.next()
             case "--who": who = it.next() ?? who
+            case "--app": app = it.next() ?? app
             case "--no-screen": screen = false
             case "--no-system": system = false
             case "--no-mic": mic = false
@@ -4429,17 +4529,52 @@ func check(_ a: Args) async {
                "mic": micStatus()])
 }
 
-func micInUse() -> Bool {
-    var dev = AudioDeviceID(0)
-    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+func prop32(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector) -> UInt32? {
+    var addr = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    return AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &value) == noErr ? value : nil
+}
+
+func bundleID(_ obj: AudioObjectID) -> String {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var cf: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &cf) == noErr, let v = cf else { return "" }
+    return v.takeRetainedValue() as String
+}
+
+func isRecorder(_ pid: pid_t) -> Bool {
+    if pid == getpid() { return true }
+    var buf = [CChar](repeating: 0, count: 4096)
+    guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return false }
+    return String(cString: buf).hasSuffix("/rami-rec")
+}
+
+// Processes other than Rami's own recorder that are taking audio input now
+// (bundle ids). macOS 14.2+ lists audio clients per process; while Rami
+// records, the mic is busy because of us, so only other users count.
+func micUsers() -> [String]? {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                           mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr else { return false }
-    var running: UInt32 = 0
-    size = UInt32(MemoryLayout<UInt32>.size)
-    addr.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
-    guard AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &running) == noErr else { return false }
-    return running != 0
+    var size: UInt32 = 0
+    let sys = AudioObjectID(kAudioObjectSystemObject)
+    guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr else { return nil }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids) == noErr else { return nil }
+    var out: [String] = []
+    for id in ids {
+        guard prop32(id, kAudioProcessPropertyIsRunningInput) == 1, let raw = prop32(id, kAudioProcessPropertyPID) else { continue }
+        let pid = pid_t(bitPattern: raw)
+        if isRecorder(pid) { continue }
+        var bundle = bundleID(id)
+        if bundle.isEmpty, let app = NSRunningApplication(processIdentifier: pid) { bundle = app.bundleIdentifier ?? "" }
+        let name = bundle.isEmpty ? "pid \(pid)" : bundle
+        if !SYSTEM_LISTENERS.contains(name) && !out.contains(name) { out.append(name) }
+    }
+    return out
 }
 
 func calls() {
@@ -4450,7 +4585,9 @@ func calls() {
         if let name = CALL_APPS[id], !apps.contains(name) { apps.append(name) }
         if BROWSERS.contains(id) { browser = true }
     }
-    printJSON(["mic_busy": micInUse(), "apps": apps, "browser": browser])
+    let users = micUsers()
+    printJSON(["mic_busy": !(users ?? []).isEmpty, "mic_users": users ?? [], "per_process": users != nil,
+               "apps": apps, "browser": browser])
 }
 
 func transcribe(_ a: Args) async {
@@ -4482,10 +4619,12 @@ func record(_ a: Args) async {
     let out: Out
     do { out = try Out(dir: URL(fileURLWithPath: dir)) } catch { fail("cannot write to \(dir): \(error.localizedDescription)") }
     let rec = Recorder(out: out)
-    let timer = DispatchSource.makeTimerSource(queue: .main)
-    timer.schedule(deadline: .now(), repeating: LIVE_INTERVAL)
-    timer.setEventHandler { out.flushLive() }
-    timer.resume()
+    // Kept in a global: a local timer is cancelled when this function returns,
+    // and live.json (timer, levels, heard) would stop updating.
+    liveTimer = DispatchSource.makeTimerSource(queue: .main)
+    liveTimer?.schedule(deadline: .now(), repeating: LIVE_INTERVAL)
+    liveTimer?.setEventHandler { out.flushLive() }
+    liveTimer?.resume()
 
     var stopping = false
     let stopNow: @Sendable () -> Void = {
@@ -4520,6 +4659,7 @@ func record(_ a: Args) async {
 }
 
 var signalSources: [DispatchSourceSignal] = []
+var liveTimer: DispatchSourceTimer?
 
 func startCapture(_ rec: Recorder, _ a: Args, _ loc: Locale?, _ stopNow: @escaping @Sendable () -> Void) async {
     let out = rec.out
@@ -4554,14 +4694,36 @@ func startCapture(_ rec: Recorder, _ a: Args, _ loc: Locale?, _ stopNow: @escapi
     }
 }
 
+// A pop-up above every window, so the owner can say yes without opening the
+// page. Not now, Esc, or no answer in 45 s means no.
+func ask(_ a: Args) {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    app.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "Record this call?"
+    alert.informativeText = "A call started in \(a.app). Rami records the screen, your mic and the call's audio on this Mac, " +
+        "and links what is said to your tasks. Tell the others before you record."
+    alert.addButton(withTitle: "Record")
+    alert.addButton(withTitle: "Not now").keyEquivalent = "\u{1b}"
+    alert.window.level = .floating
+    Timer.scheduledTimer(withTimeInterval: 45, repeats: false) { _ in app.abortModal() }
+    let yes = alert.runModal() == .alertFirstButtonReturn
+    printJSON(["record": yes])
+}
+
 let args = Args(CommandLine.arguments)
+if args.cmd == "ask" {
+    ask(args)
+    exit(0)
+}
 Task {
     switch args.cmd {
     case "check": await check(args); exit(0)
     case "calls": calls(); exit(0)
     case "transcribe": await transcribe(args); exit(0)
     case "record": await record(args)   // runs until a signal
-    default: fail("usage: rami-rec check|calls|record --out DIR|transcribe FILE --out DIR")
+    default: fail("usage: rami-rec check|calls|ask --app NAME|record --out DIR|transcribe FILE --out DIR")
     }
 }
 // A real AppKit main loop, not dispatchMain(): ScreenCaptureKit puts its
@@ -6311,7 +6473,8 @@ const IDLE_MS = 3000;
 const SEGS = 16;
 const TABS = [['all', 'all'], ['LINK', 'link'], ['ANSWER', 'answer'], ['TASK', 'task'], ['DECISION', 'decision'], ['transcript', 'transcript']];
 const SWITCHES = [['screen', 'Screen', 'video of the main display'], ['system', 'System audio', 'what the call says (them)'],
-  ['mic', 'Microphone', 'what you say (you)'], ['detect', 'Detect calls', 'offer to record when a call starts'],
+  ['mic', 'Microphone', 'what you say (you)'], ['detect', 'Ask when a call starts', 'a pop-up offers to record; never starts by itself'],
+  ['autostop', 'Stop when the call ends', '20 s after the call app lets go of the mic'],
   ['notes', 'Notes by claude', 'summary and action items after the call; the transcript is sent to claude']];
 const ACTIONS = { link: 'LINK TO TASK', ask: 'ASK RAMI', inbox: '+ INBOX', decide: '+ LOG' };
 
@@ -6475,7 +6638,7 @@ function standby() {
     el('span', { class: 'label standby-led' }, el('span', { class: 'led', 'aria-hidden': 'true' }),
       info.settings.detect ? 'standby · listening for calls' : 'standby'),
     el('span', { class: 'standby-big' }, 'No meeting in progress.'),
-    el('span', { class: 'standby-text' }, 'When Zoom, Teams, FaceTime or a browser call uses the microphone, Rami offers to record. ' +
+    el('span', { class: 'standby-text' }, 'When Zoom, Teams, FaceTime or a browser call uses the microphone, a pop-up asks whether to record, and the recording stops when the call ends. ' +
       'Screen, mic and system audio are captured and transcribed by Apple\'s on-device model; nothing is uploaded while you record.'),
     perms.length ? el('span', { class: 'standby-text is-warn' }, perms.join(' · ') + ': macOS asks on the first recording') : null,
     taskPicker(),
@@ -6668,7 +6831,7 @@ function renderSide() {
       el('span', { class: 'setting-text' }, el('b', {}, label), el('span', {}, hint)),
       el('button', {
         class: 'switch' + (on ? ' is-on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on), 'aria-label': label,
-        'data-fk': 'msw:' + key, disabled: !!cur() && key !== 'notes' && key !== 'detect',
+        'data-fk': 'msw:' + key, disabled: !!cur() && !['notes', 'detect', 'autostop'].includes(key),
         onclick: () => post('api/meet/settings', { key, value: !on }),
       }, el('span', { class: 'switch-knob' })));
   }));
@@ -7418,9 +7581,13 @@ Cmd-K (or /) searches; c captures a note from any screen.
 - **System (6):** health checks (background job, last tick, agent, hooks,
   git), the notifications switch, agent model, the page's look (auto, light,
   dark, steel: the design's three directions), and 24 hours of activity.
-- **Meet (7):** record a call on this Mac (macOS 26 or later). When Zoom,
-  Teams, FaceTime or a browser call is using the microphone, Rami offers to
-  record (it never starts on its own). It captures the screen, your mic
+- **Meet (7):** record a call on this Mac (macOS 26 or later). While
+  `brain serve` runs, a call that starts (Zoom, Teams, FaceTime, Slack,
+  Discord, or a call in a browser taking the microphone) brings up a
+  "Record this call?" pop-up; Record starts it, Not now or no answer leaves
+  it alone (it never starts on its own). Once a call has been seen, the
+  recording stops 20 s after the call app lets go of the mic; a recording
+  with no call in it (a meeting in the room) runs until you press STOP. It captures the screen, your mic
   ("you") and the call's audio ("them"), and Apple's on-device speech model
   writes the transcript as people talk. Cards appear as things are said:
   **link** (this sounds like one of your tasks), **answer** (a question, with

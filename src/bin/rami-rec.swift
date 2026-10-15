@@ -4,7 +4,8 @@
 // the machine. Built by the installer with swiftc; brain_meet.py drives it.
 //
 //   rami-rec check                      JSON: what is available and permitted
-//   rami-rec calls                      JSON: is the mic in use, which call apps run
+//   rami-rec calls                      JSON: who else uses the mic, which call apps run
+//   rami-rec ask --app NAME             pop-up "Record this call?"; JSON {"record": bool}
 //   rami-rec record --out DIR [--no-screen] [--no-system] [--no-mic] [--locale ID] [--max-minutes N]
 //   rami-rec transcribe FILE --out DIR [--who you|them] [--locale ID]
 //
@@ -25,6 +26,9 @@ let CALL_APPS: [String: String] = [
     "com.apple.FaceTime": "FaceTime", "com.cisco.webexmeetingsapp": "Webex", "com.hnc.Discord": "Discord",
     "com.tinyspeck.slackmacgap": "Slack",
 ]
+// System services that take input on our behalf (our own transcription) or on their own (Siri).
+let SYSTEM_LISTENERS: Set<String> = ["com.apple.CoreSpeech", "com.apple.corespeechd", "com.apple.SpeechRecognitionCore",
+                                     "com.apple.siri", "com.apple.assistantd", "com.apple.DictationIM"]
 let BROWSERS: Set<String> = ["com.google.Chrome", "com.apple.Safari", "company.thebrowser.Browser",
                              "org.mozilla.firefox", "com.microsoft.edgemac", "com.brave.Browser"]
 
@@ -397,6 +401,7 @@ struct Args {
     var out: String?
     var locale: String?
     var who = "them"
+    var app = "a call app"
     var screen = true, system = true, mic = true
     var maxMinutes = 240.0
 
@@ -408,6 +413,7 @@ struct Args {
             case "--out": out = it.next()
             case "--locale": locale = it.next()
             case "--who": who = it.next() ?? who
+            case "--app": app = it.next() ?? app
             case "--no-screen": screen = false
             case "--no-system": system = false
             case "--no-mic": mic = false
@@ -438,17 +444,52 @@ func check(_ a: Args) async {
                "mic": micStatus()])
 }
 
-func micInUse() -> Bool {
-    var dev = AudioDeviceID(0)
-    var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+func prop32(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector) -> UInt32? {
+    var addr = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    return AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &value) == noErr ? value : nil
+}
+
+func bundleID(_ obj: AudioObjectID) -> String {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var cf: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, &cf) == noErr, let v = cf else { return "" }
+    return v.takeRetainedValue() as String
+}
+
+func isRecorder(_ pid: pid_t) -> Bool {
+    if pid == getpid() { return true }
+    var buf = [CChar](repeating: 0, count: 4096)
+    guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return false }
+    return String(cString: buf).hasSuffix("/rami-rec")
+}
+
+// Processes other than Rami's own recorder that are taking audio input now
+// (bundle ids). macOS 14.2+ lists audio clients per process; while Rami
+// records, the mic is busy because of us, so only other users count.
+func micUsers() -> [String]? {
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                           mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev) == noErr else { return false }
-    var running: UInt32 = 0
-    size = UInt32(MemoryLayout<UInt32>.size)
-    addr.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
-    guard AudioObjectGetPropertyData(dev, &addr, 0, nil, &size, &running) == noErr else { return false }
-    return running != 0
+    var size: UInt32 = 0
+    let sys = AudioObjectID(kAudioObjectSystemObject)
+    guard AudioObjectGetPropertyDataSize(sys, &addr, 0, nil, &size) == noErr else { return nil }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(sys, &addr, 0, nil, &size, &ids) == noErr else { return nil }
+    var out: [String] = []
+    for id in ids {
+        guard prop32(id, kAudioProcessPropertyIsRunningInput) == 1, let raw = prop32(id, kAudioProcessPropertyPID) else { continue }
+        let pid = pid_t(bitPattern: raw)
+        if isRecorder(pid) { continue }
+        var bundle = bundleID(id)
+        if bundle.isEmpty, let app = NSRunningApplication(processIdentifier: pid) { bundle = app.bundleIdentifier ?? "" }
+        let name = bundle.isEmpty ? "pid \(pid)" : bundle
+        if !SYSTEM_LISTENERS.contains(name) && !out.contains(name) { out.append(name) }
+    }
+    return out
 }
 
 func calls() {
@@ -459,7 +500,9 @@ func calls() {
         if let name = CALL_APPS[id], !apps.contains(name) { apps.append(name) }
         if BROWSERS.contains(id) { browser = true }
     }
-    printJSON(["mic_busy": micInUse(), "apps": apps, "browser": browser])
+    let users = micUsers()
+    printJSON(["mic_busy": !(users ?? []).isEmpty, "mic_users": users ?? [], "per_process": users != nil,
+               "apps": apps, "browser": browser])
 }
 
 func transcribe(_ a: Args) async {
@@ -491,10 +534,12 @@ func record(_ a: Args) async {
     let out: Out
     do { out = try Out(dir: URL(fileURLWithPath: dir)) } catch { fail("cannot write to \(dir): \(error.localizedDescription)") }
     let rec = Recorder(out: out)
-    let timer = DispatchSource.makeTimerSource(queue: .main)
-    timer.schedule(deadline: .now(), repeating: LIVE_INTERVAL)
-    timer.setEventHandler { out.flushLive() }
-    timer.resume()
+    // Kept in a global: a local timer is cancelled when this function returns,
+    // and live.json (timer, levels, heard) would stop updating.
+    liveTimer = DispatchSource.makeTimerSource(queue: .main)
+    liveTimer?.schedule(deadline: .now(), repeating: LIVE_INTERVAL)
+    liveTimer?.setEventHandler { out.flushLive() }
+    liveTimer?.resume()
 
     var stopping = false
     let stopNow: @Sendable () -> Void = {
@@ -529,6 +574,7 @@ func record(_ a: Args) async {
 }
 
 var signalSources: [DispatchSourceSignal] = []
+var liveTimer: DispatchSourceTimer?
 
 func startCapture(_ rec: Recorder, _ a: Args, _ loc: Locale?, _ stopNow: @escaping @Sendable () -> Void) async {
     let out = rec.out
@@ -563,14 +609,36 @@ func startCapture(_ rec: Recorder, _ a: Args, _ loc: Locale?, _ stopNow: @escapi
     }
 }
 
+// A pop-up above every window, so the owner can say yes without opening the
+// page. Not now, Esc, or no answer in 45 s means no.
+func ask(_ a: Args) {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    app.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "Record this call?"
+    alert.informativeText = "A call started in \(a.app). Rami records the screen, your mic and the call's audio on this Mac, " +
+        "and links what is said to your tasks. Tell the others before you record."
+    alert.addButton(withTitle: "Record")
+    alert.addButton(withTitle: "Not now").keyEquivalent = "\u{1b}"
+    alert.window.level = .floating
+    Timer.scheduledTimer(withTimeInterval: 45, repeats: false) { _ in app.abortModal() }
+    let yes = alert.runModal() == .alertFirstButtonReturn
+    printJSON(["record": yes])
+}
+
 let args = Args(CommandLine.arguments)
+if args.cmd == "ask" {
+    ask(args)
+    exit(0)
+}
 Task {
     switch args.cmd {
     case "check": await check(args); exit(0)
     case "calls": calls(); exit(0)
     case "transcribe": await transcribe(args); exit(0)
     case "record": await record(args)   // runs until a signal
-    default: fail("usage: rami-rec check|calls|record --out DIR|transcribe FILE --out DIR")
+    default: fail("usage: rami-rec check|calls|ask --app NAME|record --out DIR|transcribe FILE --out DIR")
     }
 }
 // A real AppKit main loop, not dispatchMain(): ScreenCaptureKit puts its

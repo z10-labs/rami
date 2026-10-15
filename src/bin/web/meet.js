@@ -9,7 +9,8 @@ const IDLE_MS = 3000;
 const SEGS = 16;
 const TABS = [['all', 'all'], ['LINK', 'link'], ['ANSWER', 'answer'], ['TASK', 'task'], ['DECISION', 'decision'], ['transcript', 'transcript']];
 const SWITCHES = [['screen', 'Screen', 'video of the main display'], ['system', 'System audio', 'what the call says (them)'],
-  ['mic', 'Microphone', 'what you say (you)'], ['detect', 'Detect calls', 'offer to record when a call starts'],
+  ['mic', 'Microphone', 'what you say (you)'], ['detect', 'Ask when a call starts', 'a pop-up offers to record; never starts by itself'],
+  ['autostop', 'Stop when the call ends', '20 s after the call app lets go of the mic'],
   ['notes', 'Notes by claude', 'summary and action items after the call; the transcript is sent to claude']];
 const ACTIONS = { link: 'LINK TO TASK', ask: 'ASK RAMI', inbox: '+ INBOX', decide: '+ LOG' };
 
@@ -173,7 +174,7 @@ function standby() {
     el('span', { class: 'label standby-led' }, el('span', { class: 'led', 'aria-hidden': 'true' }),
       info.settings.detect ? 'standby · listening for calls' : 'standby'),
     el('span', { class: 'standby-big' }, 'No meeting in progress.'),
-    el('span', { class: 'standby-text' }, 'When Zoom, Teams, FaceTime or a browser call uses the microphone, Rami offers to record. ' +
+    el('span', { class: 'standby-text' }, 'When Zoom, Teams, FaceTime or a browser call uses the microphone, a pop-up asks whether to record, and the recording stops when the call ends. ' +
       'Screen, mic and system audio are captured and transcribed by Apple\'s on-device model; nothing is uploaded while you record.'),
     perms.length ? el('span', { class: 'standby-text is-warn' }, perms.join(' · ') + ': macOS asks on the first recording') : null,
     taskPicker(),
@@ -366,7 +367,7 @@ function renderSide() {
       el('span', { class: 'setting-text' }, el('b', {}, label), el('span', {}, hint)),
       el('button', {
         class: 'switch' + (on ? ' is-on' : ''), type: 'button', role: 'switch', 'aria-checked': String(on), 'aria-label': label,
-        'data-fk': 'msw:' + key, disabled: !!cur() && key !== 'notes' && key !== 'detect',
+        'data-fk': 'msw:' + key, disabled: !!cur() && !['notes', 'detect', 'autostop'].includes(key),
         onclick: () => post('api/meet/settings', { key, value: !on }),
       }, el('span', { class: 'switch-knob' })));
   }));

@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import webbrowser
 
 import brain_ask
@@ -353,6 +354,8 @@ def serve(port, open_browser, core):
         raise core.BrainError("cannot listen on 127.0.0.1:%d (%s); try --port N" % (port, e))
     httpd.token = secrets.token_hex(24)
     httpd.core = core
+    # Calls are watched while the server runs: a pop-up when one starts, a stop when it ends.
+    threading.Thread(target=brain_meet.watch, args=(core,), daemon=True).start()
     url = "http://127.0.0.1:%d/" % httpd.server_address[1]
     sys.stdout.write("brain serve: %s  (Rami; Ctrl-C to stop)\n" % url)
     sys.stdout.flush()
