@@ -6371,7 +6371,17 @@ async function refresh(me) {
     }
     if (!info.overview.call.detected) skipped = '';
   } catch (e) {
-    setStatusLine(false, 'meet unavailable: ' + e.message);
+    // The page files are read on every request, the server's code only at start:
+    // a `brain serve` started before an upgrade has no Meet yet.
+    const old = /not found/i.test(e.message);
+    setStatusLine(false, old ? 'meet: this brain serve is older than the page; restart it (Ctrl-C, then brain serve)'
+      : 'meet unavailable: ' + e.message);
+    if (old && !info && $('meet-main')) {
+      $('meet-main').replaceChildren(el('div', { class: 'standby' },
+        el('span', { class: 'label' }, 'restart needed'),
+        el('span', { class: 'standby-big' }, 'Restart brain serve.'),
+        el('span', { class: 'standby-text' }, 'It was started before Meet was installed. Press Ctrl-C in its terminal and run ~/brain/bin/brain serve --open again.')));
+    }
   }
   if (me !== mounted || !$('meet')) return;
   if (!info) {   // never loaded: try again rather than render nothing for good
