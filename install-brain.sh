@@ -3523,30 +3523,48 @@ button.chip { font: 500 11px var(--mono); }
 /* ---------------------------------------------------------------- graph */
 .graph { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
 .graph-canvas { position: relative; min-height: 420px; overflow: hidden; border-right: 1px solid var(--line);
-  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px; }
-.graph-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.edge { stroke: var(--mute); stroke-width: 1; opacity: .55; }
+  background-image: radial-gradient(var(--line) 1px, transparent 1px); background-size: 22px 22px;
+  touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; outline: none; }
+.graph-canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--ink); }
+.graph-canvas.is-dragging { cursor: grabbing; }
+.graph-canvas svg, .graph-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+.graph-layer { pointer-events: none; }
+.edge { stroke: var(--mute); stroke-width: 1; opacity: .55; transition: opacity var(--fast); }
 .edge-session { stroke-dasharray: 4 4; }
 .edge-decision { stroke: var(--acc2); }
+.edge.is-far { opacity: .18; }
 .edge.is-hot { stroke: var(--acc); stroke-width: 2; opacity: 1; }
-.gnode { position: absolute; transform: translate(-50%, -50%); border: 0; background: transparent; padding: 0;
-  display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--ink); transition: opacity var(--fast); }
-.gnode.is-far .gdot { opacity: .45; }
+/* A node is a zero-size point at its position; dot and label hang off it. */
+.gnode { position: absolute; left: 0; top: 0; width: 0; height: 0; border: 0; background: transparent; padding: 0;
+  color: var(--ink); pointer-events: auto; cursor: pointer; outline: none; transition: opacity var(--fast); }
+.graph-canvas.is-dragging .gnode { cursor: grabbing; }
+.gdot { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); display: block; border-radius: 50%;
+  border: 1.5px solid var(--ink); background: var(--key); transition: transform var(--fast) var(--ease), opacity var(--fast); }
+.gnode:hover .gdot { transform: translate(-50%, -50%) scale(1.18); }
+.gnode:focus-visible .gdot { box-shadow: 0 0 0 3px var(--panel), 0 0 0 5px var(--acc2); }
+.gnode.is-far .gdot { opacity: .35; }
 .gnode.is-far .glabel { color: var(--mute); }
-.gnode-l { align-items: flex-start; }
-.gnode-l .gdot { margin-left: 4px; }
-.gnode-r { align-items: flex-end; }
-.gnode-r .gdot { margin-right: 4px; }
-.gdot { display: block; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--key); }
 .gnode-project .gdot { background: var(--ink); }
 .gnode-task.st-active .gdot { background: var(--acc); }
 .gnode-task.st-blocked .gdot { background: var(--bad); }
 .gnode-task.st-waiting .gdot { background: var(--warn); }
 .gnode-decision .gdot { background: var(--acc2); border-radius: 3px; }
 .gnode.is-picked .gdot { box-shadow: 0 0 0 4px var(--panel), 0 0 0 6px var(--ink); }
-.glabel { font: 600 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel); padding: 1px 4px;
-  white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-.graph-canvas.is-narrow .gnode-task:not(.is-picked) .glabel, .graph-canvas.is-narrow .gnode-decision:not(.is-picked) .glabel { display: none; }
+.glabel { position: absolute; left: 0; top: calc(var(--r, 6px) + 6px); transform: translateX(calc(-50% + var(--dx, 0px)));
+  font: 600 10px/14px var(--mono); letter-spacing: .04em; text-transform: uppercase; background: var(--panel);
+  padding: 1px 4px; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.glabel.is-up { top: auto; bottom: calc(var(--r, 6px) + 6px); }
+.glabel.is-hidden { visibility: hidden; }
+.gnode-project .glabel { font-weight: 700; }
+.graph-tools { position: absolute; right: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.gtool { min-width: 34px; height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--key);
+  color: var(--key-ink); box-shadow: 0 2px 0 var(--line); font: 600 13px var(--mono); cursor: pointer; }
+.gtool:last-child { font-size: 10px; letter-spacing: .06em; }
+.gtool:hover { border-color: var(--ink); }
+.gtool:active { transform: translateY(2px); box-shadow: none; }
+.gtool:focus-visible { outline: 2px solid var(--acc2); outline-offset: 2px; }
+.graph-hint { position: absolute; left: 12px; bottom: 10px; margin: 0; font: 500 10px var(--mono); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--mute); pointer-events: none; }
 .graph-side { padding: 24px; display: flex; flex-direction: column; gap: 12px; overflow: auto; min-width: 0; }
 .gside-kind { color: var(--acc-text); }
 .gside-title { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
@@ -3606,6 +3624,7 @@ button.chip { font: 500 11px var(--mono); }
   .sugg { white-space: normal; text-align: left; }
   .cap-time { display: none; }
   .panel-head .btn-acc { padding: 7px 10px; }
+  .graph-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
@@ -4693,30 +4712,63 @@ function render() {
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/graph.js" 644 <<'__BRAIN_EOF__'
 // Graph: projects, tasks and decisions, and how they connect.
-// Positions come from a small deterministic force layout (same data, same picture).
-import { $, el, api, store, panelHead, keepFocus } from './core.js';
+// Live force layout (graph-sim.js) drawn in screen pixels. Drag a node to move
+// it, drag the background to pan, scroll or pinch to zoom, +/-/0 on the canvas.
+// Labels that would collide are hidden; zoom in or hover a node to see them.
+import { $, el, api, store, panelHead, keepFocus, reducedMotion } from './core.js';
 import { askNow } from './ask.js';
+import { createSim, syncSim, tick, heat, settle } from './graph-sim.js';
 
-const ITERATIONS = 300;
-const PAD = 9;            // keep nodes this far (in %) from the edges
 const NS = 'http://www.w3.org/2000/svg';
-let data = null;
-let pos = new Map();
-let picked = null;
-let lastKey = '';
+const ZOOM_MIN = 0.25, ZOOM_MAX = 4, ZOOM_STEP = 1.3;
+const DRAG_SLOP = 4;          // px before a press on a node counts as a drag
+const FIT_PAD = 48;
+const LABEL_GAP = 6;          // px between a dot and its label
+const LABEL_H = 16;
 
-export async function mount(panel) {
+let data = null;
+let lastJson = '';
+let picked = null;
+let hovered = null;
+let sim = createSim();
+let view = { k: 1, x: 0, y: 0 };
+let userView = false;      // the owner panned or zoomed: stop auto-fitting
+let frame = 0;
+let tween = null;
+let dom = null;               // { canvas, svg, layer, lines: [[edge, line]], nodes: Map id -> {btn, label, w} }
+let resize = null;
+
+export function mount(panel) {
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('aria-hidden', 'true');
+  const tool = (label, text, fn) => el('button', { class: 'gtool', type: 'button', 'aria-label': label, title: label, onclick: fn }, text);
   panel.replaceChildren(
     panelHead('04', 'graph', 'graph-sub'),
     el('div', { class: 'graph' },
-      el('div', { class: 'graph-canvas', id: 'graph-canvas' },
-        document.createElementNS(NS, 'svg')),
+      el('div', { class: 'graph-canvas', id: 'graph-canvas', tabindex: '0', 'aria-label': 'Graph. Plus and minus zoom, 0 fits.' },
+        svg,
+        el('div', { class: 'graph-layer', id: 'graph-layer' }),
+        el('div', { class: 'graph-tools' },
+          tool('Zoom in', '+', () => zoomBy(ZOOM_STEP)),
+          tool('Zoom out', '−', () => zoomBy(1 / ZOOM_STEP)),
+          tool('Fit to view', 'FIT', () => fit(true))),
+        el('p', { class: 'graph-hint' }, 'drag · scroll or pinch to zoom · double-click to fit')),
       el('aside', { class: 'graph-side', id: 'graph-side', 'aria-live': 'polite' })));
-  const svg = $('graph-canvas').querySelector('svg');
-  svg.setAttribute('viewBox', '0 0 100 100');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('aria-hidden', 'true');
-  await refresh();
+  sim = createSim();
+  dom = null; lastJson = ''; userView = false; hovered = null;
+  const canvas = $('graph-canvas');
+  bindGestures(canvas);
+  resize = new ResizeObserver(() => { if (!userView) fit(false); draw(); });
+  resize.observe(canvas);
+  refresh();
+}
+
+export function unmount() {
+  cancelAnimationFrame(frame);
+  frame = 0;
+  if (resize) resize.disconnect();
+  resize = null;
+  dom = null;
 }
 
 export async function update() {
@@ -4724,112 +4776,302 @@ export async function update() {
 }
 
 async function refresh() {
+  let next;
   try {
-    data = await api('api/graph');
+    next = await api('api/graph');
   } catch (e) {
     $('graph-sub').textContent = 'graph unavailable: ' + e.message;
     return;
   }
-  const key = data.nodes.map((n) => n.id).join('|') + '#' + data.edges.map((e) => e.a + e.b).join('|');
-  if (key !== lastKey) {
-    lastKey = key;
-    pos = layout(data.nodes, data.edges);
-  }
+  const json = JSON.stringify(next);
+  if (json === lastJson || !$('graph-canvas')) return;
+  lastJson = json;
+  data = next;
+  const first = syncSim(sim, data.nodes, data.edges, (n) => size(n) / 2);
   if (!data.nodes.some((n) => n.id === picked)) picked = (data.nodes.find((n) => n.kind === 'project') || data.nodes[0] || {}).id || null;
-  keepFocus(render);
-}
-
-function hash(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return (h >>> 0) / 4294967295;
-}
-
-function layout(nodes, edges) {
-  const p = new Map(nodes.map((n, i) => {
-    const a = (i / Math.max(1, nodes.length)) * Math.PI * 2 + hash(n.id);
-    const r = n.kind === 'project' ? 12 : 30;
-    return [n.id, { x: 50 + r * Math.cos(a), y: 50 + r * Math.sin(a), vx: 0, vy: 0 }];
-  }));
-  const links = edges.filter((e) => p.has(e.a) && p.has(e.b));
-  for (let it = 0; it < ITERATIONS; it++) {
-    const cool = 1 - it / ITERATIONS;
-    for (const a of p.values()) {
-      for (const b of p.values()) {
-        if (a === b) continue;
-        const dx = a.x - b.x, dy = a.y - b.y, d2 = Math.max(dx * dx + dy * dy, 1);
-        a.vx += (dx / d2) * 6; a.vy += (dy / d2) * 6;
-      }
-      a.vx += (50 - a.x) * 0.02; a.vy += (50 - a.y) * 0.02;
-    }
-    for (const e of links) {
-      const a = p.get(e.a), b = p.get(e.b);
-      const want = e.kind === 'project' ? 20 : 16;
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(Math.hypot(dx, dy), 0.01);
-      const f = ((d - want) / d) * 0.08;
-      a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
-    }
-    for (const a of p.values()) {
-      a.x = Math.min(100 - PAD, Math.max(PAD, a.x + a.vx * cool));
-      a.y = Math.min(100 - PAD, Math.max(PAD, a.y + a.vy * cool));
-      a.vx *= 0.5; a.vy *= 0.5;
-    }
+  keepFocus(build);
+  if (first || reducedMotion()) {
+    settle(sim);
+    if (first || !userView) fit(false);
+    draw();
+  } else {
+    heat(sim, 0.3);
+    run();
   }
-  // Stretch the result to use the whole canvas.
-  const xs = [...p.values()].map((a) => a.x), ys = [...p.values()].map((a) => a.y);
-  const fit = (v, lo, hi) => (hi - lo < 1 ? 50 : PAD + ((v - lo) / (hi - lo)) * (100 - 2 * PAD));
-  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  for (const a of p.values()) { a.x = fit(a.x, x0, x1); a.y = fit(a.y, y0, y1); }
-  return p;
 }
 
+// ---------------------------------------------------------------- data helpers
 const neighbours = (id) => data.edges.filter((e) => e.a === id || e.b === id)
   .map((e) => ({ id: e.a === id ? e.b : e.a, kind: e.kind }));
 const byId = (id) => data.nodes.find((n) => n.id === id);
 
 function size(n) {
-  if (n.kind === 'project') return 16 + 4 * Math.min(6, neighbours(n.id).length);
+  if (n.kind === 'project') return 18 + 4 * Math.min(6, neighbours(n.id).length);
   if (n.kind === 'task') return 12 + Math.min(10, Math.round((n.work || 0) / 3));
   return 10;
 }
 
-function render() {
+// The node whose neighbourhood is lit: the hovered one, else the picked one.
+function focusSet() {
+  const id = hovered || picked;
+  return { id, near: new Set(id ? [id, ...neighbours(id).map((x) => x.id)] : []) };
+}
+
+// ---------------------------------------------------------------- DOM
+function build() {
   const projects = data.nodes.filter((n) => n.kind === 'project').length;
   const tasks = data.nodes.filter((n) => n.kind === 'task').length;
   $('graph-sub').textContent = projects + ' projects · ' + tasks + ' open tasks · linked by repo, shared sessions and decisions';
   const svg = $('graph-canvas').querySelector('svg');
-  const near = new Set(picked ? [picked, ...neighbours(picked).map((x) => x.id)] : []);
-  svg.replaceChildren(...data.edges.filter((e) => pos.has(e.a) && pos.has(e.b)).map((e) => {
-    const a = pos.get(e.a), b = pos.get(e.b);
+  const lines = sim.links.map((e) => {
     const line = document.createElementNS(NS, 'line');
-    for (const [k, v] of [['x1', a.x], ['y1', a.y], ['x2', b.x], ['y2', b.y]]) line.setAttribute(k, v.toFixed(2));
-    line.setAttribute('class', 'edge edge-' + e.kind + (near.has(e.a) && near.has(e.b) && (e.a === picked || e.b === picked) ? ' is-hot' : ''));
-    line.setAttribute('vector-effect', 'non-scaling-stroke');
-    return line;
-  }));
-  const canvas = $('graph-canvas');
-  canvas.classList.toggle('is-narrow', canvas.clientWidth < 600);
-  canvas.querySelectorAll('.gnode').forEach((n) => n.remove());
-  for (const n of data.nodes) {
-    const p = pos.get(n.id);
+    line.setAttribute('class', 'edge edge-' + e.kind);
+    return [e, line];
+  });
+  svg.replaceChildren(...lines.map(([, l]) => l));
+  const nodes = new Map();
+  $('graph-layer').replaceChildren(...data.nodes.map((n) => {
     const s = size(n);
-    canvas.append(el('button', {
-      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : '') + (n.id === picked ? ' is-picked' : '') +
-        (picked && !near.has(n.id) ? ' is-far' : '') + (p.x < 25 ? ' gnode-l' : p.x > 75 ? ' gnode-r' : ''),
-      type: 'button', 'data-fk': 'g:' + n.id, 'aria-pressed': String(n.id === picked), title: n.label,
-      'aria-label': n.kind + ': ' + n.label, style: { left: p.x + '%', top: p.y + '%' },
-      onclick: () => { picked = n.id; keepFocus(render); },
-    }, el('span', { class: 'gdot', style: { width: s + 'px', height: s + 'px' } }),
-      el('span', { class: 'glabel' }, n.label)));
-  }
+    const label = el('span', { class: 'glabel' }, n.label);
+    const btn = el('button', {
+      class: 'gnode gnode-' + n.kind + (n.status ? ' st-' + n.status : ''),
+      type: 'button', 'data-fk': 'g:' + n.id, 'data-id': n.id, title: n.label,
+      'aria-label': n.kind + ': ' + n.label,
+      onclick: () => pick(n.id, false),
+      onpointerenter: () => hover(n.id), onpointerleave: () => hover(null),
+      onfocus: () => hover(n.id), onblur: () => hover(null),
+    }, el('span', { class: 'gdot', style: { width: s + 'px', height: s + 'px' } }), label);
+    nodes.set(n.id, { btn, label, r: s / 2, w: 0 });
+    return btn;
+  }));
+  for (const v of nodes.values()) v.w = v.label.offsetWidth;
+  dom = { canvas: $('graph-canvas'), lines, nodes };
   renderSide();
 }
 
-function focusNode(id) {
-  const btn = document.querySelector('[data-fk="g:' + CSS.escape(id) + '"]');
-  if (btn) btn.focus({ preventScroll: true });
+function draw() {
+  if (!dom || !data) return;
+  const W = dom.canvas.clientWidth, H = dom.canvas.clientHeight;
+  const sx = (b) => b.x * view.k + view.x, sy = (b) => b.y * view.k + view.y;
+  const { id: lit, near } = focusSet();
+  for (const [e, line] of dom.lines) {
+    const a = sim.bodies.get(e.a), b = sim.bodies.get(e.b);
+    line.setAttribute('x1', sx(a).toFixed(1)); line.setAttribute('y1', sy(a).toFixed(1));
+    line.setAttribute('x2', sx(b).toFixed(1)); line.setAttribute('y2', sy(b).toFixed(1));
+    line.classList.toggle('is-hot', e.a === lit || e.b === lit);
+    line.classList.toggle('is-far', !!lit && e.a !== lit && e.b !== lit);
+  }
+  for (const n of data.nodes) {
+    const v = dom.nodes.get(n.id), b = sim.bodies.get(n.id);
+    v.x = sx(b); v.y = sy(b);
+    v.btn.style.setProperty('transform', 'translate(' + v.x.toFixed(1) + 'px,' + v.y.toFixed(1) + 'px)');
+    v.btn.classList.toggle('is-picked', n.id === picked);
+    v.btn.classList.toggle('is-far', !!lit && !near.has(n.id));
+    v.btn.setAttribute('aria-pressed', String(n.id === picked));
+  }
+  placeLabels(W, H, lit, near);
 }
 
+// Greedy label placement: most important first; each label goes below its dot,
+// else above, else is hidden. Labels are nudged inside the canvas edges.
+function placeLabels(W, H, lit, near) {
+  const rank = (n) => (n.id === picked || n.id === lit ? 0 : near.has(n.id) ? 1 : n.kind === 'project' ? 2 : n.kind === 'task' ? 3 : 4);
+  const order = [...data.nodes].sort((a, b) => rank(a) - rank(b) || size(b) - size(a));
+  const taken = [...dom.nodes.values()].map((v) => ({ x0: v.x - v.r, x1: v.x + v.r, y0: v.y - v.r, y1: v.y + v.r }));
+  const hits = (r) => taken.some((t) => r.x0 < t.x1 && r.x1 > t.x0 && r.y0 < t.y1 && r.y1 > t.y0);
+  for (const n of order) {
+    const v = dom.nodes.get(n.id);
+    const dx = Math.max(4 - (v.x - v.w / 2), Math.min(0, W - 4 - (v.x + v.w / 2)));
+    const x0 = v.x + dx - v.w / 2, x1 = x0 + v.w;
+    const below = { x0, x1, y0: v.y + v.r + LABEL_GAP, y1: v.y + v.r + LABEL_GAP + LABEL_H };
+    const above = { x0, x1, y0: v.y - v.r - LABEL_GAP - LABEL_H, y1: v.y - v.r - LABEL_GAP };
+    const must = rank(n) === 0;
+    const spot = !hits(below) ? 'below' : !hits(above) ? 'above' : must ? 'below' : null;
+    const onScreen = v.x > -v.w && v.x < W + v.w && v.y > -40 && v.y < H + 40;
+    v.label.classList.toggle('is-hidden', !spot || !onScreen);
+    v.label.classList.toggle('is-up', spot === 'above');
+    v.label.style.setProperty('--dx', dx.toFixed(1) + 'px');
+    v.label.style.setProperty('--r', v.r + 'px');
+    if (spot && onScreen) taken.push(spot === 'below' ? below : above);
+  }
+}
+
+// ---------------------------------------------------------------- motion
+function run() {
+  if (frame) return;
+  const step = () => {
+    let busy = sim.alpha > 0 && tick(sim);
+    if (!busy) sim.alpha = 0;
+    if (tween) busy = stepTween() || busy;
+    draw();
+    frame = busy && dom ? requestAnimationFrame(step) : 0;
+  };
+  frame = requestAnimationFrame(step);
+}
+
+function setView(next, animate) {
+  if (!animate || reducedMotion()) { view = next; tween = null; draw(); return; }
+  tween = { from: view, to: next, t0: performance.now() };
+  run();
+}
+
+function stepTween() {
+  const t = Math.min(1, (performance.now() - tween.t0) / 320);
+  const e = 1 - Math.pow(1 - t, 3);
+  const { from, to } = tween;
+  view = { k: from.k + (to.k - from.k) * e, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e };
+  if (t >= 1) tween = null;
+  return t < 1;
+}
+
+function fit(animate) {
+  if (animate) userView = false;
+  if (!dom || !data || !data.nodes.length) return;
+  const W = dom.canvas.clientWidth, H = dom.canvas.clientHeight;
+  if (!W || !H) return;
+  const bs = [...sim.bodies.values()];
+  const x0 = Math.min(...bs.map((b) => b.x)) - 60, x1 = Math.max(...bs.map((b) => b.x)) + 60;
+  const y0 = Math.min(...bs.map((b) => b.y)) - 30, y1 = Math.max(...bs.map((b) => b.y)) + 40;
+  const k = clampK(Math.min((W - 2 * FIT_PAD) / (x1 - x0), (H - 2 * FIT_PAD) / (y1 - y0), 1.4));
+  setView({ k, x: W / 2 - k * (x0 + x1) / 2, y: H / 2 - k * (y0 + y1) / 2 }, animate);
+}
+
+const clampK = (k) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k));
+
+function zoomAt(px, py, factor, animate) {
+  userView = true;
+  const k = clampK(view.k * factor);
+  const f = k / view.k;
+  setView({ k, x: px - (px - view.x) * f, y: py - (py - view.y) * f }, animate);
+}
+
+function zoomBy(factor) {
+  zoomAt(dom.canvas.clientWidth / 2, dom.canvas.clientHeight / 2, factor, true);
+}
+
+function centerOn(id) {
+  const b = sim.bodies.get(id);
+  if (!b) return;
+  const W = dom.canvas.clientWidth, H = dom.canvas.clientHeight;
+  const x = b.x * view.k + view.x, y = b.y * view.k + view.y;
+  if (x > 60 && x < W - 60 && y > 60 && y < H - 60) return;
+  setView({ k: view.k, x: W / 2 - b.x * view.k, y: H / 2 - b.y * view.k }, true);
+}
+
+// ---------------------------------------------------------------- interaction
+function pick(id, reveal) {
+  picked = id;
+  hovered = null;
+  draw();
+  renderSide();
+  if (reveal) centerOn(id);
+}
+
+function hover(id) {
+  if (hovered === id) return;
+  hovered = id;
+  draw();
+}
+
+function bindGestures(canvas) {
+  const points = new Map();     // pointerId -> {x, y}
+  let drag = null;              // {kind: 'node'|'pan'|'pinch', ...}
+  let suppressClick = false;
+  const local = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const world = (p) => ({ x: (p.x - view.x) / view.k, y: (p.y - view.y) / view.k });
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('.graph-tools')) return;
+    const p = local(e);
+    points.set(e.pointerId, p);
+    tween = null;
+    if (points.size === 2) {
+      const [a, b] = [...points.values()];
+      releaseNode(drag);
+      for (const id of points.keys()) canvas.setPointerCapture(id);
+      drag = { kind: 'pinch', d: Math.hypot(a.x - b.x, a.y - b.y) };
+      return;
+    }
+    const node = e.target.closest('.gnode');
+    drag = node ? { kind: 'node', id: node.dataset.id, start: p, moved: false } : { kind: 'pan', last: p, start: p, moved: false };
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!points.has(e.pointerId) || !drag) return;
+    const p = local(e);
+    points.set(e.pointerId, p);
+    if (drag.kind === 'pinch') {
+      const [a, b] = [...points.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / drag.d, false);
+      drag.d = d;
+      return;
+    }
+    if (!drag.moved && Math.hypot(p.x - drag.start.x, p.y - drag.start.y) < DRAG_SLOP) return;
+    // Capture only once it is a drag: capturing on press would send the
+    // click to the canvas instead of the node button under the pointer.
+    if (!drag.moved) canvas.setPointerCapture(e.pointerId);
+    drag.moved = true;
+    canvas.classList.add('is-dragging');
+    if (drag.kind === 'pan') {
+      userView = true;
+      setView({ ...view, x: view.x + p.x - drag.last.x, y: view.y + p.y - drag.last.y }, false);
+      drag.last = p;
+      return;
+    }
+    const b = sim.bodies.get(drag.id), w = world(p);
+    if (!b) return;
+    b.fx = w.x; b.fy = w.y;
+    heat(sim, 0.25);
+    run();
+  });
+
+  const end = (e) => {
+    if (!points.delete(e.pointerId)) return;
+    canvas.classList.remove('is-dragging');
+    if (drag && drag.moved) suppressClick = true;
+    releaseNode(drag);
+    drag = null;
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  // A drag ends with a click on whatever is under the pointer: swallow it.
+  canvas.addEventListener('click', (e) => {
+    if (suppressClick) { suppressClick = false; e.stopPropagation(); e.preventDefault(); }
+  }, true);
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const p = local(e);
+    const unit = e.deltaMode === 1 ? 16 : 1;
+    zoomAt(p.x, p.y, Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0015)), false);
+  }, { passive: false });
+
+  // Double-click: on a pinned node lets it go back into the layout; on the background fits.
+  canvas.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.graph-tools')) return;
+    const node = e.target.closest('.gnode');
+    const b = node && sim.bodies.get(node.dataset.id);
+    if (!node) fit(true);
+    else if (b && b.fx !== null) { b.fx = null; b.fy = null; heat(sim, 0.3); run(); }
+  });
+
+  canvas.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const act = { '+': () => zoomBy(ZOOM_STEP), '=': () => zoomBy(ZOOM_STEP), '-': () => zoomBy(1 / ZOOM_STEP), '0': () => fit(true) }[e.key];
+    if (act) { e.preventDefault(); act(); }
+  });
+}
+
+// A dragged node stays where it was dropped (until reload); a press without
+// a drag leaves it free.
+function releaseNode(drag) {
+  if (!drag || drag.kind !== 'node' || drag.moved) return;
+  const b = sim.bodies.get(drag.id);
+  if (b) { b.fx = null; b.fy = null; }
+}
+
+// ---------------------------------------------------------------- side panel
 function describe(n) {
   if (n.kind === 'task') {
     const t = store.data && store.data.tasks.find((x) => x.slug === n.slug);
@@ -4854,14 +5096,111 @@ function renderSide() {
     el('h3', { class: 'label' }, 'linked'),
     el('div', { class: 'glinks' }, links.length ? links.map((m) => el('button', {
       class: 'glink', type: 'button', 'data-fk': 'gl:' + m.id,
-      onclick: () => { picked = m.id; render(); focusNode(m.id); },
+      onclick: () => {
+        pick(m.id, true);
+        const btn = dom && dom.nodes.get(m.id);
+        if (btn) btn.btn.focus({ preventScroll: true });
+      },
+      onpointerenter: () => hover(m.id), onpointerleave: () => hover(null),
     }, '→ ' + m.label)) : el('span', { class: 'none' }, 'none')),
     el('span', { class: 'spacer' }),
     n.kind === 'task' ? el('a', { class: 'btn-key gside-open', href: '#today/' + encodeURIComponent(n.slug) }, 'OPEN IN TODAY') : null,
     el('button', { class: 'btn-acc', type: 'button', onclick: () => askNow(question) }, 'ASK ABOUT THIS'),
   ].filter(Boolean));
 }
+__BRAIN_EOF__
+put_file "$BRAIN/bin/web/graph-sim.js" 644 <<'__BRAIN_EOF__'
+// Force layout for the graph, in world pixels (1 unit = 1px at zoom 1).
+// Deterministic: the same nodes start in the same places, so a reload
+// settles into the same picture. Positions survive data refreshes by id.
 
+const REPEL = 2600;          // node-node push
+const GRAVITY = 0.012;       // pull toward the origin, keeps islands close
+const SPRING = 0.06;
+const DAMP = 0.58;           // velocity kept per tick
+const ALPHA_MIN = 0.004;
+const ALPHA_DECAY = 0.975;
+const REST = { project: 110, session: 130, decision: 70 };
+
+function hash(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return (h >>> 0) / 4294967295;
+}
+
+export function createSim() {
+  return { bodies: new Map(), links: [], alpha: 0 };
+}
+
+// Bring the sim in line with new data: keep known bodies where they are,
+// place new ones next to a linked body (or on a ring if they have none).
+export function syncSim(sim, nodes, edges, radius) {
+  const old = sim.bodies;
+  const bodies = new Map();
+  const ring = 160 + nodes.length * 6;
+  nodes.forEach((n) => {
+    const prev = old.get(n.id);
+    if (prev) { bodies.set(n.id, { ...prev, r: radius(n) }); return; }
+    const a = hash(n.id) * Math.PI * 2;
+    const d = n.kind === 'project' ? ring * 0.35 : ring;
+    bodies.set(n.id, { x: d * Math.cos(a), y: d * Math.sin(a), vx: 0, vy: 0, fx: null, fy: null, r: radius(n) });
+  });
+  for (const n of nodes) {
+    if (old.has(n.id)) continue;
+    const anchor = edges.map((e) => (e.a === n.id ? e.b : e.b === n.id ? e.a : null))
+      .find((id) => id && old.has(id));
+    if (!anchor) continue;
+    const p = bodies.get(anchor), a = hash(n.id + '~') * Math.PI * 2;
+    Object.assign(bodies.get(n.id), { x: p.x + 60 * Math.cos(a), y: p.y + 60 * Math.sin(a) });
+  }
+  sim.bodies = bodies;
+  sim.links = edges.filter((e) => bodies.has(e.a) && bodies.has(e.b));
+  return old.size === 0;
+}
+
+export function tick(sim) {
+  const list = [...sim.bodies.values()];
+  const { alpha } = sim;
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      if (dx === 0 && dy === 0) { dx = 0.1 * (i - j); dy = 0.1; }
+      const d2 = dx * dx + dy * dy, d = Math.sqrt(d2);
+      let f = (REPEL * alpha) / Math.max(d2, 100);
+      const gap = a.r + b.r + 34;                  // room for a label between dots
+      if (d < gap) f += ((gap - d) / d) * 0.5;
+      a.vx += dx * f / d; a.vy += dy * f / d;
+      b.vx -= dx * f / d; b.vy -= dy * f / d;
+    }
+    a.vx -= a.x * GRAVITY * alpha; a.vy -= a.y * GRAVITY * alpha;
+  }
+  for (const e of sim.links) {
+    const a = sim.bodies.get(e.a), b = sim.bodies.get(e.b);
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.max(Math.hypot(dx, dy), 0.01);
+    const f = ((d - (REST[e.kind] || 100)) / d) * SPRING * alpha;
+    a.vx += dx * f; a.vy += dy * f; b.vx -= dx * f; b.vy -= dy * f;
+  }
+  for (const a of list) {
+    if (a.fx !== null) { a.x = a.fx; a.y = a.fy; a.vx = 0; a.vy = 0; continue; }
+    a.vx *= DAMP; a.vy *= DAMP;
+    a.x += a.vx; a.y += a.vy;
+  }
+  sim.alpha = sim.alpha * ALPHA_DECAY;
+  return sim.alpha > ALPHA_MIN;
+}
+
+export function heat(sim, alpha) {
+  sim.alpha = Math.max(sim.alpha, alpha);
+}
+
+// Run until still: used for the first picture and under reduced motion.
+export function settle(sim, alpha = 1) {
+  heat(sim, alpha);
+  for (let i = 0; i < 600 && tick(sim); i++);
+  sim.alpha = 0;
+}
 __BRAIN_EOF__
 put_file "$BRAIN/bin/web/look.js" 644 <<'__BRAIN_EOF__'
 // Runs before the page paints (plain script in <head>), so a saved look
