@@ -151,6 +151,11 @@ function renderDetail(t) {
       el('h3', { class: 'label' }, 'follow-ups · ' + openFollowups(t).length + ' open'),
       fus.length ? el('ul', { class: 'checks' }, fus.map(followup)) : el('span', { class: 'none' }, 'none')),
     el('div', { class: 'block' },
+      el('h3', { class: 'label' }, 'linked recordings'),
+      t.meetings.length ? el('div', { class: 'glinks' }, t.meetings.map((m) => el('a', {
+        class: 'glink', href: '#meet/' + encodeURIComponent(m.id),
+      }, '▶ ' + m.title + ' · ' + shortWhen(m.started)))) : el('span', { class: 'none' }, 'none linked')),
+    el('div', { class: 'block' },
       el('h3', { class: 'label' }, 'links'),
       (t.tickets.length + t.sessions.length) ? el('div', { class: 'chips' },
         t.tickets.map(ticketChip),

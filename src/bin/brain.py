@@ -1759,11 +1759,57 @@ USAGE = """brain: the second brain command
   graph [--all] [--json]        projects, tasks and decisions and how they connect
   projects [--json]             tasks grouped by the repo their sessions ran in
   search QUERY [--json]         find tasks, log lines, decisions and archived tasks
+  meet status|start|stop|list|show ID|link ID SLUG   [--title T] [--task SLUG] [--json]
+                                record a call on this Mac (macOS 26+), live transcript, notes after
   serve [--port N] [--open]     local web page (127.0.0.1 only): today's tasks, with actions
 
   transcript SESSION_ID         condensed tail of a session transcript (agent use)
   ask SESSION_ID QUESTION       ask an idle session via a forked headless resume (agent use)
 """
+
+
+def cmd_meet(p, rest):
+    import brain_meet as M
+    core = sys.modules[__name__]
+    p.add_argument("action", choices=["status", "start", "stop", "list", "show", "link", "finish"])
+    p.add_argument("args", nargs="*")
+    p.add_argument("--title", default="")
+    p.add_argument("--task")
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args(rest)
+    try:
+        if a.action == "status":
+            out = M.status(core)
+        elif a.action == "start":
+            m = M.start(core, a.title, a.task)
+            out = "recording %s (pid %s); stop with: brain meet stop" % (m["id"], m["pid"])
+        elif a.action == "stop":
+            m = M.stop(core)
+            M.finish(core, m["id"])   # the CLI waits for the summary
+            out = M.detail(core, m["id"])["summary"] if a.json else "stopped %s; notes in %s" % (
+                m["id"], os.path.join(M.mdir(core, m["id"]), "meeting.md"))
+        elif a.action == "list":
+            out = M.library(core)
+            if not a.json:
+                out = "\n".join("%s  %-40s %s  %s" % (x["id"], one_line(x["title"], 40), M.clock(x["duration"]),
+                                                       ",".join(x["tasks"])) for x in out) or "no meetings yet"
+        elif a.action == "show":
+            out = M.detail(core, (a.args or [""])[0]) if a.json else read(
+                os.path.join(M.mdir(core, (a.args or [""])[0]), "meeting.md")) or "no notes yet"
+        elif a.action == "link":
+            if len(a.args) != 2:
+                raise BrainError("usage: brain meet link MEETING_ID SLUG")
+            M.link(core, a.args[0], a.args[1])
+            out = "linked %s to %s" % (a.args[0], a.args[1])
+        else:
+            M.finish(core, (a.args or [""])[0])
+            out = "notes written"
+    except M.MeetError as e:
+        raise BrainError(str(e))
+    if isinstance(out, (dict, list)):
+        out = json.dumps(out, indent=1, ensure_ascii=False)
+    print(out)
+    return 0
 
 
 def main(argv):
@@ -1957,6 +2003,8 @@ def main(argv):
         for h in [] if a.json else hits:
             print(one_line("%-8s %-24s %s  (%s)" % (h["type"], h["slug"], h["label"], h["hint"]), 200))
         return 0
+    if cmd == "meet":
+        return cmd_meet(p, rest)
     if cmd == "serve":
         p.add_argument("--port", type=int, default=7477)
         p.add_argument("--open", action="store_true", help="open the page in a browser")

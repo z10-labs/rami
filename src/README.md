@@ -21,6 +21,7 @@ in what sessions missed.
 | `sessions.log` | `time \| start\|end \| session_id \| cwd \| transcript` |
 | `config` | settings (below) |
 | `bin/` | scripts (replaced by the installer on upgrade) |
+| `meetings/<id>/` | recorded calls: `meeting.md` (summary, action items, transcript), the transcript as JSON, and the audio and screen files (not committed: they stay on this Mac) |
 | `.state/` | tick bookkeeping and logs (not committed) |
 
 ## Daily use
@@ -44,6 +45,7 @@ From a terminal:
 ~/brain/bin/brain search "words"   # tasks, work done, decisions, archive
 ~/brain/bin/brain query "question" # answered from the brain by claude, read-only
 ~/brain/bin/brain projects         # tasks grouped by repo
+~/brain/bin/brain meet start --task SLUG   # record a call (stop: brain meet stop; list, show ID)
 ~/brain/bin/brain status           # health: background job, last tick, agent, hooks, git
 ~/brain/bin/brain config NOTIFY off   # change one setting (validated)
 ~/brain/bin/brain show SLUG
@@ -124,7 +126,7 @@ Nothing secret belongs here: no tokens, credentials or customer data.
 `~/brain/bin/brain serve --open` starts a small server on this machine only
 (127.0.0.1:7477) and opens the brain page. It keeps running until you press
 Ctrl-C in its terminal, and refreshes every 10 seconds, so work recorded by
-Claude sessions and the agent shows up on its own. Keys 1 to 6 switch screens;
+Claude sessions and the agent shows up on its own. Keys 1 to 7 switch screens;
 Cmd-K (or /) searches; c captures a note from any screen.
 
 - **Inbox (1):** capture a note; Rami suggests where it goes (a line in a
@@ -142,6 +144,29 @@ Cmd-K (or /) searches; c captures a note from any screen.
 - **System (6):** health checks (background job, last tick, agent, hooks,
   git), the notifications switch, agent model, the page's look (auto, light,
   dark, steel: the design's three directions), and 24 hours of activity.
+- **Meet (7):** record a call on this Mac (macOS 26 or later). While
+  `brain serve` runs, a call that starts (Zoom, Teams, FaceTime, Slack,
+  Discord, or a call in a browser taking the microphone) brings up a
+  "Record this call?" pop-up; Record starts it, Not now or no answer leaves
+  it alone (it never starts on its own). Once a call has been seen, the
+  recording stops 20 s after the call app lets go of the mic; a recording
+  with no call in it (a meeting in the room) runs until you press STOP. It captures the screen, your mic
+  ("you") and the call's audio ("them"), and Apple's on-device speech model
+  writes the transcript as people talk. Cards appear as things are said:
+  **link** (this sounds like one of your tasks), **answer** (a question, with
+  the closest thing your brain already holds), **task** (someone committed to
+  something; send it to the Inbox) and **decision** (log it on the task).
+  After you stop, claude writes a summary, action items, decisions and gaps
+  nobody owns, and suggests the tasks the call was about; each task you link
+  gets one line in its Work done. Switch off "Notes by claude" to keep the
+  transcript entirely on this Mac. A red REC in the top bar shows a recording
+  in progress; recordings stop by themselves after 4 hours. Linked
+  recordings also show on the task in Today.
+
+  The first recording asks macOS for Microphone and Screen Recording access
+  for the app that runs `brain serve` (Terminal, iTerm, …). Tell the people on
+  the call before you record. With speakers on, your mic hears the call too;
+  Rami drops those echoed lines, but headphones give a cleaner transcript.
 
 Notes from Rami (a failed deploy check, a stalled session) pop up on the page
 while it is open, and stay in the Inbox until you clear them there; notes older

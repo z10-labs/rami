@@ -8,6 +8,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/brain-test.XXXXXX")"
 export HOME="$WORK/home"
 # The launchd label is per user, not per HOME: never touch the owner's real job.
 export BRAIN_NO_LAUNCHD=1
+export BRAIN_NO_SWIFT=1   # the recorder build takes a minute; meet tests use a fake rami-rec
 mkdir -p "$HOME/.claude" "$WORK/bin"
 unset CLAUDE_CONFIG_DIR BRAIN_HOME BRAIN_AGENT BRAIN_RUN_ID CLAUDE_CODE_SESSION_ID
 PASS=0; FAIL=0
@@ -521,6 +522,32 @@ for t in gamma-one gamma-two; do rm -f "$HOME/brain/tasks/$t.md"; done
 echo "== web: brain serve"
 "$B" new web-task-one "Web task one" --goal "Show it on the page" --next "Check the page" >/dev/null
 "$B" followup +1h web-task-one "Check the web page" >/dev/null
+# Fake recorder for Meet: `record` writes a transcript (with a mic echo of the
+# call) and waits for SIGINT like rami-rec does.
+cat > "$WORK/bin/rami-rec" <<'EOF'
+#!/bin/bash
+case "$1" in
+check) echo '{"speech":true,"locale":"en-US","model_installed":true,"screen":"granted","mic":"granted"}' ;;
+calls) if [ -f "$FAKE_CALL" ]; then echo '{"mic_busy":true,"mic_users":["us.zoom.xos"],"per_process":true,"apps":["Zoom"],"browser":false}'; else echo '{"mic_busy":false,"mic_users":[],"per_process":true,"apps":["Zoom"],"browser":false}'; fi ;;
+ask) echo "$*" >> "$FAKE_ASK_LOG"; if [ -f "$FAKE_ASK" ]; then echo '{"record":true}'; else echo '{"record":false}'; fi ;;
+record)
+  echo "$*" > "$FAKE_REC_ARGS"
+  while [ $# -gt 0 ]; do [ "$1" = --out ] && out="$2"; shift; done
+  trap 'echo "{\"duration\":12,\"files\":[],\"errors\":[]}" > "$out/done.json"; exit 0' INT TERM
+  echo '{"state":"recording","elapsed":3,"levels":{"you":0.5},"heard":{"them":"so the"},"screen":true,"errors":[]}' > "$out/live.json"
+  cat >> "$out/transcript.jsonl" <<'T'
+{"t":1,"end":3,"who":"them","text":"Quick sync on the web task one page."}
+{"t":4,"end":6,"who":"you","text":"I'll check the page tomorrow."}
+{"t":4.5,"end":6,"who":"you","text":"Quick sync on the web task one page."}
+{"t":7,"end":9,"who":"them","text":"We decided to ship the page on Friday."}
+T
+  while true; do sleep 0.2; done ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "$WORK/bin/rami-rec"
+export RAMI_REC="$WORK/bin/rami-rec" FAKE_CALL="$WORK/fake-call" FAKE_REC_ARGS="$WORK/rec-args" FAKE_ASK="$WORK/fake-ask" FAKE_ASK_LOG="$WORK/ask-log"
+touch "$FAKE_CALL"
 "$B" serve --port 0 > "$WORK/serve.out" 2>&1 & srv=$!
 for i in $(seq 1 50); do grep -q '^brain serve: http' "$WORK/serve.out" 2>/dev/null && break; sleep 0.1; done
 URL="$(sed -n 's/^brain serve: \(http[^ ]*\).*/\1/p' "$WORK/serve.out" | head -1)"
@@ -529,7 +556,7 @@ check "serve prints a 127.0.0.1 URL" "echo \"$URL\" | grep -q '^http://127.0.0.1
 page="$(curl -s "$URL")"
 TOKEN="$(echo "$page" | sed -n 's/.*name="brain-token" content="\([0-9a-f]*\)".*/\1/p' | head -1)"
 check "page served with a per-run token" "[ \${#TOKEN} -ge 32 ]"
-check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js graph-sim.js look.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
+check "page assets served" "(for f in app.js app.css core.js today.js inbox.js palette.js ask.js projects.js system.js graph.js graph-sim.js look.js meet.js; do curl -sf ${URL}\$f >/dev/null || exit 1; done)"
 check "unknown path is 404" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}../config)\" = 404 ] && [ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}nope)\" = 404 ]"
 api() { curl -s -o "$WORK/api.out" -w '%{http_code}' -H "X-Brain-Token: $TOKEN" -H 'Content-Type: application/json' "$@"; }
 check "state needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/state)\" = 403 ]"
@@ -597,8 +624,140 @@ check "empty question from the page rejected" "[ \"\$(api -X POST -d '{\"questio
 check "graph from the page" "[ \"\$(api ${URL}api/graph)\" = 200 ] && python3 -c \"
 import json;g=json.load(open('$WORK/api.out')); assert g['nodes'] and isinstance(g['edges'], list), g
 \""
+echo "== meet (fake recorder)"
+cat > "$WORK/bin/claude-meet" <<EOF
+#!/bin/bash
+in="\$(cat)"; { echo "ARGS: \$*"; echo "\$in"; echo "----"; } >> "$WORK/meet-calls.log"
+echo 'Notes: {"title":"Web page sync","summary":"The page ships Friday. Checks go on.","actions":[{"text":"Check the page","owner":"you"}],"decisions":["Ship Friday"],"gaps":["Nobody owns the copy"],"tasks":[{"slug":"web-task-one","note":"Agreed to ship Friday"},{"slug":"web-task-two","note":"Copy needs an owner"},"no-such-task"]}'
+EOF
+chmod +x "$WORK/bin/claude-meet"
+"$B" config CLAUDE_BIN "$WORK/bin/claude-meet" >/dev/null
+check "meet status needs the token" "[ \"\$(curl -s -o /dev/null -w '%{http_code}' ${URL}api/meet)\" = 403 ]"
+check "meet is available with the recorder" "[ \"\$(api ${URL}api/meet)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); assert d['available']['ok'] and d['settings']['screen'] and d['library']==[], d
+\""
+check "a call is detected from the mic and a call app" "api ${URL}api/state >/dev/null; python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); assert d['meet']['call']=={'detected':True,'app':'Zoom'} and d['meet']['recording'] is None, d['meet']
+\""
+check "capture switch from the page" "[ \"\$(api -X POST -d '{\"key\":\"screen\",\"value\":false}' ${URL}api/meet/settings)\" = 200 ] && [ \"\$(api -X POST -d '{\"key\":\"evil\",\"value\":true}' ${URL}api/meet/settings)\" = 400 ]"
+check "start recording linked to a task" "[ \"\$(api -X POST -d '{\"title\":\"Web sync\",\"task\":\"web-task-one\",\"app\":\"Zoom\"}' ${URL}api/meet/start)\" = 200 ]"
+MID="$(python3 -c "import json;print(json.load(open('$WORK/api.out'))['meeting']['id'])")"
+for i in $(seq 1 30); do [ -s "$HOME/brain/meetings/$MID/transcript.jsonl" ] && break; sleep 0.1; done
+check "the recorder gets the capture switches" "grep -q -- '--no-screen' $WORK/rec-args && ! grep -q -- '--no-mic' $WORK/rec-args && grep -q -- '--max-minutes' $WORK/rec-args"
+check "recordings are private to this user" "[ \"\$(stat -f %Lp $HOME/brain/meetings 2>/dev/null || stat -c %a $HOME/brain/meetings)\" = 700 ] && [ \"\$(stat -f %Lp $HOME/brain/meetings/$MID 2>/dev/null || stat -c %a $HOME/brain/meetings/$MID)\" = 700 ]"
+check "only one recording at a time" "[ \"\$(api -X POST -d '{}' ${URL}api/meet/start)\" = 409 ]"
+check "state shows the recording" "api ${URL}api/state >/dev/null; python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); r=d['meet']['recording']; assert r and r['id']=='$MID' and r['elapsed']==3, d['meet']
+\""
+check "live transcript drops the mic's echo of the call" "[ \"\$(api ${URL}api/meet/$MID/live)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out'))
+assert [x['who'] for x in d['lines']]==['them','you','them'], d['lines']
+assert d['heard']=={'them':'so the'} and d['levels']['you']==0.5, d
+\""
+check "live cards: a commitment and a decision, no link to the task already linked" "python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); t=[c['type'] for c in d['cards']]
+assert 'TASK' in t and 'DECISION' in t and 'LINK' not in t, d['cards']
+\""
+tcard="$(python3 -c "import json;print([c['id'] for c in json.load(open('$WORK/api.out'))['cards'] if c['type']=='TASK'][0])")"
+dcard="$(python3 -c "import json;print([c['id'] for c in json.load(open('$WORK/api.out'))['cards'] if c['type']=='DECISION'][0])")"
+check "a commitment card goes to the Inbox" "[ \"\$(api -X POST -d '{\"action\":\"inbox\"}' ${URL}api/meet/$MID/cards/$tcard)\" = 200 ] && grep -q \"| MEET | I'll check the page tomorrow.\" $HOME/brain/captures.md"
+check "a decision card is logged on the linked task" "[ \"\$(api -X POST -d '{\"action\":\"decide\"}' ${URL}api/meet/$MID/cards/$dcard)\" = 200 ] && grep -q 'Decided in Web sync: We decided to ship the page on Friday.' $HOME/brain/tasks/web-task-one.md"
+check "acted cards are marked done" "api ${URL}api/meet/$MID/live >/dev/null; python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); assert all(c['state']=='done' for c in d['cards'] if c['id'] in ('$tcard','$dcard')), d['cards']
+\""
+mkdir -p "$HOME/outside"; echo "# mine" > "$HOME/outside/notes.md"
+check "a decision cannot be logged outside tasks/" "[ \"\$(api -X POST -d '{\"action\":\"decide\",\"dest\":\"../../outside/notes\"}' ${URL}api/meet/$MID/cards/$dcard)\" = 400 ] && [ \"\$(cat $HOME/outside/notes.md)\" = '# mine' ]"
+check "unknown card action refused" "[ \"\$(api -X POST -d '{\"action\":\"rm\"}' ${URL}api/meet/$MID/cards/$tcard)\" = 400 ]"
+check "bad meeting id refused" "[ \"\$(api ${URL}api/meet/..%2Fconfig/live)\" = 400 ] && [ \"\$(api ${URL}api/meet/20991231-0000/detail)\" = 400 ]"
+"$B" new web-task-two "Web task two" --goal "Second" --next "More" >/dev/null
+check "stop recording" "[ \"\$(api -X POST -d '{}' ${URL}api/meet/stop)\" = 200 ] && [ \"\$(api -X POST -d '{}' ${URL}api/meet/stop)\" = 409 ]"
+for i in $(seq 1 60); do grep -q '"state": "done"' "$HOME/brain/meetings/$MID/meta.json" 2>/dev/null && break; sleep 0.2; done
+check "the recorder stopped cleanly" "[ -f $HOME/brain/meetings/$MID/done.json ]"
+check "notes written by the model, with only real task refs" "[ \"\$(api ${URL}api/meet/$MID/detail)\" = 200 ] && python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); s=d['summary']; m=d['meta']
+assert s['summary'].startswith('The page ships Friday') and s['actions'][0]['text']=='Check the page', s
+assert s['tasks']==[{'slug':'web-task-one','note':'Agreed to ship Friday'},{'slug':'web-task-two','note':'Copy needs an owner'}], s['tasks']
+assert m['tasks']==['web-task-one'], 'the model only suggests tasks: %r' % m['tasks']
+assert m['state']=='done' and m['title']=='Web sync' and m['speakers']==['them','you'] and m['duration']==12, m
+\""
+check "the notes prompt carries the transcript and the board, run as an agent with no tools" "grep -q 'them: We decided to ship the page on Friday.' $WORK/meet-calls.log && grep -q 'Brain board' $WORK/meet-calls.log && grep -q -- '--max-turns 1' $WORK/meet-calls.log && ! grep -q -- '--allowedTools' $WORK/meet-calls.log"
+check "meeting.md has summary, actions and transcript" "grep -q '^## Summary' $HOME/brain/meetings/$MID/meeting.md && grep -q '^- Check the page (you)' $HOME/brain/meetings/$MID/meeting.md && grep -q '^\[00:07\] them: We decided' $HOME/brain/meetings/$MID/meeting.md"
+check "the linked task's work done notes the meeting once" "[ \"\$(grep -c 'Meeting Web sync (' $HOME/brain/tasks/web-task-one.md)\" = 1 ] && grep -q 'Meeting Web sync (.*): Agreed to ship Friday' $HOME/brain/tasks/web-task-one.md && ! grep -q 'Meeting Web sync (.*): Copy needs an owner' $HOME/brain/tasks/web-task-two.md"
+check "the task lists its recording" "api ${URL}api/state >/dev/null; python3 -c \"
+import json;d=json.load(open('$WORK/api.out')); t=[x for x in d['tasks'] if x['slug']=='web-task-one'][0]
+assert t['meetings'][0]['id']=='$MID' and d['meet']['recording'] is None, t['meetings']
+\""
+check "library lists the meeting" "\"$B\" meet list | grep -q \"^$MID  Web sync\""
+check "meetings stay out of the brain's git" "grep -qx 'meetings/' $HOME/brain/.gitignore && [ -z \"\$(git -C $HOME/brain status --porcelain meetings)\" ]"
+check "linking a finished meeting to another task notes it there" "[ \"\$(api -X POST -d '{\"slug\":\"web-task-two\"}' ${URL}api/meet/$MID/link)\" = 200 ] && grep -q 'Meeting Web sync' $HOME/brain/tasks/web-task-two.md"
+check "linking to an unknown task refused" "[ \"\$(api -X POST -d '{\"slug\":\"no-such-task\"}' ${URL}api/meet/$MID/link)\" = 400 ]"
+check "start with a path for a task is refused" "[ \"\$(api -X POST -d '{\"task\":\"../../outside/notes\"}' ${URL}api/meet/start)\" = 400 ]"
+check "start with an unknown task is refused" "[ \"\$(api -X POST -d '{\"task\":\"no-such-task\"}' ${URL}api/meet/start)\" = 400 ] && api ${URL}api/state >/dev/null && python3 -c \"
+import json;assert json.load(open('$WORK/api.out'))['meet']['recording'] is None
+\""
+check "a malformed notes answer gives empty lists, not a crash" "python3 -c \"
+import sys; sys.path.insert(0, '$HOME/brain/bin'); import brain as core, brain_meet as M
+s = M.parse_summary(core, '{\\\"actions\\\": 5, \\\"decisions\\\": \\\"x\\\", \\\"tasks\\\": \\\"web-task-one\\\", \\\"summary\\\": \\\"ok\\\"}')
+assert s['actions'] == [] and s['decisions'] == [] and s['tasks'] == [] and s['summary'] == 'ok', s
+\""
+check "lines that arrive out of order are carded once each" "python3 -c \"
+import sys, os, json; sys.path.insert(0, '$HOME/brain/bin'); import brain as core, brain_meet as M
+mid = '20200101-0000'; d = os.path.join(M.root(core), mid); os.makedirs(d, exist_ok=True)
+json.dump({'id': mid, 'title': 'T', 'started': '2020-01-01 00:00', 'state': 'done', 'tasks': []}, open(d + '/meta.json', 'w'))
+t = open(d + '/transcript.jsonl', 'w'); t.write(json.dumps({'t': 10, 'end': 11, 'who': 'you', 'text': 'I will send the invite.'}) + '\n'); t.close()
+a = len(M.cards(core, mid))
+t = open(d + '/transcript.jsonl', 'a'); t.write(json.dumps({'t': 2, 'end': 3, 'who': 'them', 'text': 'Can you book the room?'}) + '\n'); t.close()
+os.utime(d + '/transcript.jsonl', (1, 1))
+heard = sorted(c['heard'] for c in M.cards(core, mid))
+assert a == 1 and heard == ['Can you book the room?', 'I will send the invite.'], heard
+\""
+rm -f "$FAKE_CALL"
 kill $srv 2>/dev/null; wait $srv 2>/dev/null
 rm -f "$wf"
+
+echo "== meet: watching calls (pop-up and auto-stop)"
+W="import sys, time; sys.path.insert(0, '$HOME/brain/bin'); import brain as core, brain_meet as M"
+check "the pop-up was offered once while serve ran, and a no started nothing" "[ \"\$(grep -c -- '--app Zoom' $WORK/ask-log)\" -ge 1 ] && [ \"\$(grep -c -- '--app Zoom' $WORK/ask-log)\" -le 3 ]"
+touch "$FAKE_CALL" "$FAKE_ASK"; : > "$WORK/ask-log"
+check "a call that starts gets the pop-up; yes starts recording" "python3 -c \"
+$W
+st = {}; M.watch_tick(core, st)
+for i in range(50):
+    if M.current_id(core): break
+    time.sleep(0.1)
+mid = M.current_id(core); assert mid and M.meta(core, mid)['app'] == 'Zoom', mid
+M.watch_tick(core, st); M.watch_tick(core, st)
+assert open('$WORK/ask-log').read().count('--app Zoom') == 1
+\""
+check "the recording stops 20 s after the call ends, and only then" "rm -f $FAKE_CALL; python3 -c \"
+$W
+mid = M.current_id(core); st = {'saw_call': mid}
+M._cache.clear(); M.watch_tick(core, st, now=1000)
+assert M.current_id(core) == mid, 'stopped too early'
+M.watch_tick(core, st, now=1015); assert M.current_id(core) == mid
+M.watch_tick(core, st, now=1021); assert M.current_id(core) is None, 'did not stop'
+assert M.meta(core, mid)['state'] in ('processing', 'done')
+\" && grep -q 'the call ended' $HOME/brain/inbox.md"
+check "a recording with no call in it never stops by itself" "python3 -c \"
+$W
+m = M.start(core, 'In the room'); st = {}
+M._cache.clear(); M.watch_tick(core, st, now=1000); M.watch_tick(core, st, now=5000)
+assert M.current_id(core) == m['id']
+M.stop(core)
+\""
+rm -f "$FAKE_ASK"; touch "$FAKE_CALL"; : > "$WORK/ask-log"
+check "no at the pop-up records nothing and does not ask again for the same call" "python3 -c \"
+$W
+st = {}; M._cache.clear(); M.watch_tick(core, st); time.sleep(0.5); M.watch_tick(core, st); time.sleep(0.3)
+assert M.current_id(core) is None and open('$WORK/ask-log').read().count('--app Zoom') == 1
+\""
+check "auto-stop can be switched off" "python3 -c \"
+$W
+M.set_setting(core, 'autostop', False); m = M.start(core, 'x'); st = {'saw_call': m['id']}
+import os; os.remove('$FAKE_CALL'); M._cache.clear()
+M.watch_tick(core, st, now=1000); M.watch_tick(core, st, now=2000)
+assert M.current_id(core) == m['id']; M.stop(core); M.set_setting(core, 'autostop', True)
+\""
 
 echo "== tick lock"
 mkdir -p "$HOME/brain/.state/tick.lock"; sleep 300 & echo $! > "$HOME/brain/.state/tick.lock/pid"; holder=$!

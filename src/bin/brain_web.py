@@ -12,11 +12,13 @@ import os
 import re
 import secrets
 import sys
+import threading
 import webbrowser
 
 import brain_ask
 import brain_captures
 import brain_graph
+import brain_meet
 import brain_projects
 import brain_search
 import brain_status
@@ -46,7 +48,11 @@ ROUTES = [
     (re.compile(r"^/api/captures/([^/]+)/dismiss$"), "dismiss"),
     (re.compile(r"^/api/notes/([^/]+)/dismiss$"), "note"),
     (re.compile(r"^/api/config()$"), "config"),
+    (re.compile(r"^/api/meet/settings()$"), "meet-setting"),
+    (re.compile(r"^/api/meet/([^/]+)/link$"), "meet-link"),
+    (re.compile(r"^/api/meet/([^/]+/cards/[^/]+)$"), "meet-card"),
 ]
+MEET_GET_RE = re.compile(r"^/api/meet/([^/]+)/(live|detail)$")
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
@@ -68,7 +74,7 @@ def session_info(core, sid, sessions):
             "end": core.fmt(s["end"]) if s.get("end") else ""}
 
 
-def task_info(core, x, fus, sessions):
+def task_info(core, x, fus, sessions, meetings):
     sess = [session_info(core, sid, sessions) for sid in x.get_list("sessions")]
     project = brain_projects.task_project(x, sessions)
     return {
@@ -85,6 +91,7 @@ def task_info(core, x, fus, sessions):
         "sessions": sess,
         "work_done": x.work_done(),
         "followups": [f.as_dict() for f in fus if f.slug == x.slug],
+        "meetings": meetings.get(x.slug, []),
     }
 
 
@@ -93,14 +100,16 @@ def state(core):
     t = core.now()
     _, fus = core.load_followups()
     sessions = core.load_sessions()
+    meetings = brain_meet.task_meetings(core)
     out = []
     for x in core.all_tasks():
         if x.get("status") == "done" and core.task_updated(x).date() != t.date():
             continue
-        out.append(task_info(core, x, fus, sessions))
+        out.append(task_info(core, x, fus, sessions, meetings))
     loose = [f.as_dict() for f in fus if not f.done and not os.path.isfile(core.task_path(f.slug))]
     return {"now": core.fmt(t), "model": core.load_config().get("AGENT_MODEL") or "haiku", "tasks": out, "captures": brain_captures.open_captures(core),
-            "notes": notes(core), "reminders": loose, "projects": brain_projects.projects(core)}
+            "notes": notes(core), "reminders": loose, "projects": brain_projects.projects(core),
+            "meet": brain_meet.overview(core)}
 
 
 def notes(core):
@@ -168,6 +177,22 @@ def act(core, kind, ident, body):
         if not lines:
             raise HttpError(404, "no note %r" % ident)
         core.clear_inbox(lines)
+    elif kind == "meet-setting":
+        key, value = body.get("key"), body.get("value")
+        if not isinstance(key, str) or not isinstance(value, bool):
+            raise HttpError(400, "send key and an on/off value")
+        brain_meet.set_setting(core, key, value)
+    elif kind == "meet-link":
+        slug = body.get("slug")
+        if not isinstance(slug, str):
+            raise HttpError(400, "send the task slug")
+        brain_meet.link(core, ident, slug)
+    elif kind == "meet-card":
+        mid, _, cid = ident.partition("/cards/")
+        action, dest = body.get("action"), body.get("dest")
+        if not isinstance(action, str) or (dest is not None and not isinstance(dest, str)):
+            raise HttpError(400, "send an action")
+        brain_meet.card_act(core, mid, cid, action, dest)
 
 
 # ---------------------------------------------------------------- http
@@ -263,6 +288,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 self.check_token()
                 return self.send_json(200, brain_status.status(self.server.core))
+            if path == "/api/meet":
+                self.check_token()
+                return self.send_json(200, brain_meet.status(self.server.core))
+            m = MEET_GET_RE.match(path)
+            if m:
+                self.check_token()
+                fn = brain_meet.live if m.group(2) == "live" else brain_meet.detail
+                return self.send_json(200, fn(self.server.core, m.group(1)))
             if path == "/api/search":
                 self.check_token()
                 q = parse_qs(urlsplit(self.path).query).get("q", [""])[0][:200]
@@ -286,6 +319,20 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(200, brain_ask.ask(self.server.core, q))
                 except brain_ask.AskError as e:
                     raise HttpError(429, str(e))
+            if path in ("/api/meet/start", "/api/meet/stop"):
+                body = self.read_json()
+                core = self.server.core
+                try:
+                    if path.endswith("start"):
+                        title, task, app = body.get("title") or "", body.get("task") or None, body.get("app") or ""
+                        if not all(isinstance(v, str) for v in (title, app)) or (task and not isinstance(task, str)):
+                            raise HttpError(400, "title, task and app must be text")
+                        m = brain_meet.start(core, title, task, core.one_line(app, 40))
+                    else:
+                        m = brain_meet.stop(core)
+                except brain_meet.MeetError as e:
+                    raise HttpError(409, str(e))
+                return self.send_json(200, {"ok": True, "meeting": m})
             for rx, kind in ROUTES:
                 m = rx.match(path)
                 if m:
@@ -307,6 +354,8 @@ def serve(port, open_browser, core):
         raise core.BrainError("cannot listen on 127.0.0.1:%d (%s); try --port N" % (port, e))
     httpd.token = secrets.token_hex(24)
     httpd.core = core
+    # Calls are watched while the server runs: a pop-up when one starts, a stop when it ends.
+    threading.Thread(target=brain_meet.watch, args=(core,), daemon=True).start()
     url = "http://127.0.0.1:%d/" % httpd.server_address[1]
     sys.stdout.write("brain serve: %s  (Rami; Ctrl-C to stop)\n" % url)
     sys.stdout.flush()

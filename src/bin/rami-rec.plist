@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.rami.rec</string>
+  <key>CFBundleName</key><string>rami-rec</string>
+  <key>NSMicrophoneUsageDescription</key><string>Rami records your side of a meeting and transcribes it on this Mac.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Rami transcribes meetings on this Mac.</string>
+</dict>
+</plist>

@@ -8,6 +8,7 @@ REAL_HOME="$HOME"
 export HOME="$WORK/home"
 # The launchd label is per user, not per HOME: never touch the owner's real job.
 export BRAIN_NO_LAUNCHD=1
+export BRAIN_NO_SWIFT=1
 mkdir -p "$HOME/.claude" "$WORK/proj"
 # macOS: claude's login lives in the Keychain, which is found through HOME.
 if [ "$(uname -s)" = Darwin ] && [ ! -e "$HOME/Library/Keychains" ]; then
